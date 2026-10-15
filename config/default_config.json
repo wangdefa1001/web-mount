@@ -9,9 +9,7 @@
     { "enable": false, "name": "NapCat入口", "matchPath": "/ncqq", "matchReferer": "", "host": "127.0.0.1", "port": 6099, "prefix": "/", "ws": false },
     { "enable": false, "name": "GsCore API", "matchPath": "/api", "matchReferer": "/zy|/app", "host": "127.0.0.1", "port": 8765, "prefix": "/api", "ws": false },
     { "enable": false, "name": "NapCat API", "matchPath": "/api", "matchReferer": "/webui|/ncqq", "host": "127.0.0.1", "port": 6099, "prefix": "/api", "ws": false },
-    { "enable": false, "name": "青龙 API", "matchPath": "/api", "matchReferer": "/qinglong|/login", "host": "127.0.0.1", "port": 5700, "prefix": "/api", "ws": false },
-    { "enable": false, "name": "青龙面板", "matchPath": "/qinglong", "matchReferer": "", "host": "127.0.0.1", "port": 5700, "prefix": "/", "ws": false },
-    { "enable": false, "name": "青龙登录", "matchPath": "/login", "matchReferer": "", "host": "127.0.0.1", "port": 5700, "prefix": "/login", "ws": false },
-    { "enable": false, "name": "示例调试页面", "matchPath": "/echo", "matchReferer": "", "host": "127.0.0.1", "port": 8899, "prefix": "/", "ws": false }
+    { "enable": false, "name": "青龙面板(设 QlBaseUrl=/qinglong/ 后前缀填 /)", "matchPath": "/qinglong", "matchReferer": "", "host": "127.0.0.1", "port": 5700, "prefix": "/", "ws": false },
+    { "enable": false, "name": "示例调试页面(/echo 需后端在 8899)", "matchPath": "/echo", "matchReferer": "", "host": "127.0.0.1", "port": 8899, "prefix": "/", "ws": false }
   ]
 }
