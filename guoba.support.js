@@ -18,7 +18,7 @@ export function supportGuoba() {
     pluginInfo: {
       name: 'web-mount',
       title: '端口挂载',
-      author: 'web-mount',
+      author: '@wangdefa1001',
       isV3: true,
       isV2: false,
       description: '把本机各端口的服务反向代理到 Yunzai HTTP 端口的路径下，支持按来源/路径智能分发',
