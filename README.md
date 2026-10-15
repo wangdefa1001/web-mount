@@ -96,21 +96,92 @@ git clone <本仓库地址> web-mount
 
 ## 🔧 新增一个服务(以青龙 5700 为例)
 
-面板里加 3 条(入口 + 登录页 + 接口),**青龙登录页 `/login` 和它的 `/api` 接口都不要限制来源**(Referer 可能为空):
+### ⚠️ 先看:子路径面板必须设置「基础路径」
 
-```json
-{ "enable": true, "name": "青龙面板", "matchPath": "/qinglong", "matchReferer": "", "host": "127.0.0.1", "port": 5700, "prefix": "/",      "ws": false },
-{ "enable": true, "name": "青龙登录", "matchPath": "/login",   "matchReferer": "", "host": "127.0.0.1", "port": 5700, "prefix": "/login", "ws": false },
-{ "enable": true, "name": "青龙 API", "matchPath": "/api",     "matchReferer": "", "host": "127.0.0.1", "port": 5700, "prefix": "/api",   "ws": false }
+青龙这类 umi/react 打包的面板,前端资源与路由默认按**根路径**走。直接挂在 `/qinglong` 下会白屏,浏览器控制台报:
+
+```
+Refused to apply style from '.../login/umi.xxx.css' because its MIME type ('text/html') ...
+Refused to execute script from '.../login/umi.xxx.js' because its MIME type ('text/html') ...
 ```
 
-> ⚠️ 若其它服务也用 `/api`,**不要**把青龙 `/api` 的 `matchReferer` 留空,否则会把所有人的 `/api` 都抢走。此时应保留来源限制,并把多个来源用 `|` 合并,如 `/qinglong|/login`。
+**原因**:面板要命中"我部署在 `/qinglong/` 下"这件事,得靠它自己的基础路径配置。没配的话,资源/接口路径会脱离前缀,后端找不到就返回 SPA 兜底 HTML(text/html),MIME 校验拒绝执行。
+
+**解法(两步)**:
+
+**第 1 步:让面板知道自己的基础路径。** 青龙提供了官方环境变量 **`QlBaseUrl`**:
+
+```bash
+# Docker
+docker run -dit ... -e QlBaseUrl="/qinglong/" -e QlPort="5700" whyour/qinglong
+# docker-compose.yml
+environment:
+  - QlBaseUrl=/qinglong/
+# 非 Docker / 面具模块:在启动脚本的 env 里加 QlBaseUrl=/qinglong/(注意 pm2 会缓存旧环境,改后要连 pm2 一起重启)
+```
+
+> 规则:`QlBaseUrl` 必须**以 `/` 开头和结尾**,且要和你挂载的路径一致(挂 `/qinglong` 就填 `/qinglong/`)。
+
+**第 2 步:插件用「剥离前缀」转发**(`prefix` 填 `/`)。
+
+这里有个**关键点**:青龙的 `QlBaseUrl` 只影响**前端运行时**(它用 `/qinglong/` 作为 API 与路由的 base),而**后端的静态资源和接口实体仍在根目录**(`/umi.xxx.js`、`/api/env.js`)。所以代理**必须把 `/qinglong` 前缀剥掉**,转发到后端根:
+
+```json
+{ "enable": true, "name": "青龙面板", "matchPath": "/qinglong", "matchReferer": "", "host": "127.0.0.1", "port": 5700, "prefix": "/", "ws": false }
+```
+
+- `matchPath=/qinglong` + `prefix=/` = **剥掉 `/qinglong` 转发到后端根目录**:
+  `/qinglong/umi.xxx.js` → `:5700/umi.xxx.js`、`/qinglong/api/env.js` → `:5700/api/env.js`、`/qinglong/api/...` → `:5700/api/...`、`/qinglong/login` → `:5700/login`。
+- 浏览器始终停在 `/qinglong/...` 下(QlBaseUrl 让前端路由与接口都带这个前缀),插件再剥掉转发,两边就对齐了。
+- **一处不对齐的典型症状**:若 `prefix` 误填 `/qinglong`(原样透传),`/qinglong/api/env.js` 在后端不存在 → 返回 HTML → 前端拿不到 QlBaseUrl → 又跳回根路径 `/login` 白屏。**务必用 `prefix=/`。**
+
+> 常见误区:以为"设了 QlBaseUrl 就该透传"。实际上 QlBaseUrl 只改前端,后端仍在根;**剥离**才是正解。
+
+### 对不支持的子路径的面板怎么办?
+
+极少数面板**没有**基础路径配置项,此时用子路径代理基本无解(前端写死了根路径)。可选方案:
+
+1. **改用子域名**:如 `ql.example.com` 反代到 `127.0.0.1:5700`,面板用根路径正常。
+2. 用能改写响应体的代理(Nginx `sub_filter` 等)把绝对路径重写掉 —— 较脆弱,不推荐。
 
 ---
 
+## 🔀 进阶:`matchPath` 与 `prefix` 的区别
+
+`prefix` 决定转发到后端的路径怎么拼。记住公式:**转发路径 = `prefix` + (请求去掉 `matchPath` 后的剩余路径)**。
+
+| matchPath | prefix | 访问 | 转发到后端 | 适用 |
+|-----------|--------|------|-----------|------|
+| `/memes` | `/memes` | `/memes/a.png` | `/memes/a.png` | 原样透传(后端本身带该前缀) |
+| `/zy` | `/app` | `/zy/x` | `/app/x` | 换前缀(别名) |
+| `/qinglong` | `/` | `/qinglong/login` | `/login` | **剥离前缀**到后端根(配合 `QlBaseUrl` 的面板) |
+| `/ncqq` | `/` | `/ncqq/abc` | `/abc` | 剥离前缀(后端在根目录) |
+
+
+---
+
+
+## 🩺 常见问题(FAQ)
+
+**Q: 面板挂到子路径后白屏,控制台报 MIME type ('text/html') 不是样式表/脚本?**
+A: 面板前端默认按**根路径**取资源(`/umi.xxx.js`、`/api/...`),挂到 `/qinglong` 下就不匹配了。**两步**:①给面板设基础路径 —— 青龙用 `QlBaseUrl=/qinglong/`(让前端路由与接口都带该前缀);②插件这条路由用 **`prefix=/` 剥离前缀**,转发到后端根目录。详见「新增一个服务」一节。
+
+**Q: 访问 `/qinglong` 提示登录失效,跳转 `/login` 后跳到仓库页(如 gitee/Yunzai)/ 白屏?**
+A: 说明面板没做子路径适配(或插件前缀配错)。正解:①青龙设 `QlBaseUrl=/qinglong/`;②插件路由 `matchPath=/qinglong` + **`prefix=/`**。改完后前端跳转会变成 `/qinglong/login`,经插件剥离后到 `:5700/login`。**注意**:若 `prefix` 误填成 `/qinglong`(透传),`/qinglong/api/env.js` 在后端不存在 → 前端拿不到 base → 又跳回 `/login` 白屏。
+
+**Q: `/api` 是多个服务共用的,会互相抢吗?**
+A: 会。给 `/api` 建多条规则,每条用 `matchReferer` 限定来源;顺序即优先级,默认兜底规则放最后。若都不匹配会放行给 Yunzai(可再配一条来源留空的 `/api` 兜底)。
+
+**Q: WebSocket 支持吗?**
+A: 支持。需要 WS 的路由把 `ws` 设为 `true`(如 NapCat 实时日志 `/ws`)。
+
+---
 
 ## 📄 许可证
 
 [MIT](LICENSE) — 自由使用、修改与分发。
 
+## 🙏 致谢
 
+- [Yunzai-Bot v3](https://github.com/TimeRainStarSky/Yunzai)
+- 锅巴面板(guoba)社区
