@@ -44,6 +44,17 @@ function subPath(pathname, mp) {
   if (pathname.startsWith(mp + '/')) return pathname.slice(mp.length)
   return null
 }
+// 拼接「目标内前缀 + 子路径」，避免出现 //。
+// prefix 为 '/' 表示映射到后端根目录，也就是「剥掉挂载前缀」(适合配了 base path 的面板，如青龙 QlBaseUrl)
+function joinPath(prefix, sub) {
+  let p = prefix || ''
+  if (p !== '/') p = p.replace(/\/+$/, '')
+  if (p === '/') p = ''
+  let s = sub || ''
+  if (s === '') return p === '' ? '/' : p
+  if (!s.startsWith('/')) s = '/' + s
+  return p + s
+}
 // 模式命中：支持 | 分隔多关键字(OR)
 function hasAny(hay, pat) {
   if (!pat) return false
@@ -167,7 +178,7 @@ export default class WebMount extends plugin {
 
         const sub = subPath(pathname, route.matchPath)
         const qs = url.includes('?') ? url.slice(url.indexOf('?')) : ''
-        const proxyPath = route.prefix + (sub || '') + qs
+        const proxyPath = joinPath(route.prefix, sub) + qs
         this.forward(req, res, proxyPath, { host: route.host, port: route.port })
       })
     } catch (e) {
@@ -184,7 +195,7 @@ export default class WebMount extends plugin {
             const sub = subPath(pathname, r.matchPath)
             if (sub === null) continue
             const qs = (req.url || '').includes('?') ? req.url.slice(req.url.indexOf('?')) : ''
-            this.forwardWs(req, socket, head, r.prefix + sub + qs, { host: r.host, port: r.port })
+            this.forwardWs(req, socket, head, joinPath(r.prefix, sub) + qs, { host: r.host, port: r.port })
             return
           }
         })
