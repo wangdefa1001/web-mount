@@ -1,0 +1,5 @@
+# web-mount 插件配置忽略规则
+# 真实运行的配置 config/config.json 是本地个人配置（含各服务端口、路径等），
+# 请勿提交到 git，以免把本机信息/差异当成修改。
+# 仓库里提交的是默认模板：config/default_config.json
+config/config.json

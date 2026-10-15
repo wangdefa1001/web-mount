@@ -1,0 +1,17 @@
+{
+  "routes": [
+    { "enable": true, "name": "meme预览站", "matchPath": "/memes", "matchReferer": "", "host": "127.0.0.1", "port": 3132, "prefix": "/memes", "ws": false },
+    { "enable": true, "name": "GsCore面板", "matchPath": "/zy", "matchReferer": "", "host": "127.0.0.1", "port": 8765, "prefix": "/app", "ws": false },
+    { "enable": true, "name": "GsCore资源", "matchPath": "/app", "matchReferer": "", "host": "127.0.0.1", "port": 8765, "prefix": "/app", "ws": false },
+    { "enable": true, "name": "NapCat WebUI", "matchPath": "/webui", "matchReferer": "", "host": "127.0.0.1", "port": 6099, "prefix": "/webui", "ws": true },
+    { "enable": true, "name": "NapCat WS", "matchPath": "/ws", "matchReferer": "", "host": "127.0.0.1", "port": 6099, "prefix": "/ws", "ws": true },
+    { "enable": true, "name": "NapCat文件", "matchPath": "/files", "matchReferer": "", "host": "127.0.0.1", "port": 6099, "prefix": "/files", "ws": false },
+    { "enable": true, "name": "NapCat入口", "matchPath": "/ncqq", "matchReferer": "", "host": "127.0.0.1", "port": 6099, "prefix": "/", "ws": false },
+    { "enable": true, "name": "GsCore API", "matchPath": "/api", "matchReferer": "/zy|/app", "host": "127.0.0.1", "port": 8765, "prefix": "/api", "ws": false },
+    { "enable": true, "name": "NapCat API", "matchPath": "/api", "matchReferer": "/webui|/ncqq", "host": "127.0.0.1", "port": 6099, "prefix": "/api", "ws": false },
+    { "enable": false, "name": "青龙 API", "matchPath": "/api", "matchReferer": "/qinglong|/login", "host": "127.0.0.1", "port": 5700, "prefix": "/api", "ws": false },
+    { "enable": false, "name": "青龙面板", "matchPath": "/qinglong", "matchReferer": "", "host": "127.0.0.1", "port": 5700, "prefix": "/", "ws": false },
+    { "enable": false, "name": "青龙登录", "matchPath": "/login", "matchReferer": "/qinglong|/login", "host": "127.0.0.1", "port": 5700, "prefix": "/login", "ws": false },
+    { "enable": false, "name": "示例调试页面", "matchPath": "/echo", "matchReferer": "", "host": "127.0.0.1", "port": 8899, "prefix": "/", "ws": false }
+  ]
+}
