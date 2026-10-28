@@ -1,1 +1,26 @@
-{"name":"web-mount","type":"module"}
+{
+  "name": "web-mount",
+  "version": "1.2.0",
+  "description": "把本机各端口的服务反向代理挂载到 Yunzai HTTP 端口的子路径下，支持按路径/来源智能分发与 WebSocket",
+  "type": "module",
+  "main": "index.js",
+  "author": "wangdefa1001",
+  "license": "MIT",
+  "homepage": "https://github.com/wangdefa1001/web-mount",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wangdefa1001/web-mount.git"
+  },
+  "keywords": [
+    "yunzai",
+    "guoba",
+    "reverse-proxy",
+    "web-mount"
+  ],
+  "files": [
+    "index.js",
+    "guoba.support.js",
+    "config",
+    "README.md"
+  ]
+}
