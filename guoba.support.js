@@ -117,9 +117,6 @@ export function supportGuoba() {
           },
           bottomHelpMessage: '自上而下匹配，命中第一条即转发。matchPath 相同的多条规则靠「来源」区分，更精确的放前面。保存后需重启 Yunzai 生效。',
         },
-        {
-          component: 'SOFT_GROUP_END',
-        },
       ],
       getConfigData() {
         const cfg = readConfig()
