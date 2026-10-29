@@ -250,6 +250,13 @@ function esc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
+// 定长比较，避免按字符逐位比较泄露信息
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a), 'utf8')
+  const bb = Buffer.from(String(b), 'utf8')
+  if (ba.length !== bb.length) return false
+  return crypto.timingSafeEqual(ba, bb)
+}
 function fmtTime(ts) {
   if (!ts) return '-'
   const d = new Date(ts)
@@ -596,15 +603,25 @@ export default class WebMount extends plugin {
     res.end(body)
   }
 
-  // 读取表单 body：body-parser 可能已消费(则用 req.body)，否则自己读流
+  // 读取表单 body。
+  // 注意：不能只靠 req._body 判断 —— 部分 Yunzai/express 版本只把解析结果放进 req.body，
+  // 并不设置 _body，此时若按「未解析」去读流，流早已读完，会拿到空字符串（表现为“口令不正确”）。
+  // 策略：req.body 有实际内容就用它，否则再尝试读流。
   readFormBody(req) {
     return new Promise(resolve => {
-      if (req._body && req.body != null) {
-        if (typeof req.body === 'string') return resolve(req.body)
-        if (typeof req.body === 'object') {
-          const p = new URLSearchParams()
-          for (const k of Object.keys(req.body)) p.set(k, String(req.body[k]))
-          return resolve(p.toString())
+      const body = req.body
+      if (body != null) {
+        if (typeof body === 'string') {
+          if (body) return resolve(body)
+        } else if (Buffer.isBuffer(body)) {
+          if (body.length) return resolve(body.toString('utf8'))
+        } else if (typeof body === 'object') {
+          const keys = Object.keys(body)
+          if (keys.length) {
+            const p = new URLSearchParams()
+            for (const k of keys) p.set(k, String(body[k]))
+            return resolve(p.toString())
+          }
         }
       }
       if (req.readableEnded) return resolve('')
@@ -673,16 +690,33 @@ export default class WebMount extends plugin {
       return this.renderLogin(res, `尝试次数过多，请 ${Math.ceil((rec.until - now) / 1000)} 秒后重试`, 429)
     }
 
-    const body = await this.readFormBody(req)
-    const token = new URLSearchParams(body).get('token') || ''
+    const raw = await this.readFormBody(req)
+    let token = ''
+    try {
+      token = new URLSearchParams(raw).get('token') || ''
+    } catch { /* ignore */ }
 
-    if (token && token === state.settings.statusToken) {
+    const expected = state.settings.statusToken
+
+    if (state.settings.debug) {
+      logger.mark(
+        `[web-mount] 状态页登录：body ${raw.length} 字节，取到 ${token.length} 字符，` +
+        `期望 ${expected.length} 字符，${token && safeEqual(token, expected) ? '匹配' : '不匹配'}`
+      )
+    }
+
+    if (token && safeEqual(token, expected)) {
       state.loginFails.delete(ip)
       res.writeHead(302, {
-        'set-cookie': `wm_auth=${this.authCookieValue(token)}; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax`,
+        'set-cookie': `wm_auth=${this.authCookieValue(expected)}; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax`,
         location: STATUS_PATH,
       })
       return res.end()
+    }
+
+    // 没取到 token：多半是请求体没读到（不是口令错），单独提示，且不计入失败次数
+    if (!token) {
+      return this.renderLogin(res, '没有收到口令，请重新输入', 400)
     }
 
     rec.n++
@@ -1292,7 +1326,8 @@ export default class WebMount extends plugin {
         skipped.map(r => `${r.matchPath}(port=${r.port})`).join(' ; '))
     }
     if (state.settings.statusPage) {
-      logger.mark(`[web-mount] 状态页: ${STATUS_PATH}${state.settings.statusToken ? '（已设置访问口令）' : '（未设口令，建议公网暴露时设置）'}`)
+      const tk = state.settings.statusToken
+      logger.mark(`[web-mount] 状态页: ${STATUS_PATH}${tk ? `（已设口令，长度 ${tk.length}）` : '（未设口令，建议公网暴露时设置）'}`)
     }
     if (state.settings.autoReload) {
       logger.mark('[web-mount] 已开启配置热重载，修改 config.json 后约 2 秒自动生效')
