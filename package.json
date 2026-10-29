@@ -1,6 +1,6 @@
 {
   "name": "web-mount",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "把本机各端口的服务反向代理挂载到 Yunzai HTTP 端口的子路径下，支持按路径/来源智能分发与 WebSocket",
   "type": "module",
   "main": "index.js",
