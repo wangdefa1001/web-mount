@@ -2,6 +2,7 @@ import http from 'node:http'
 import net from 'node:net'
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import plugin from '../../lib/plugins/plugin.js'
 
@@ -109,6 +110,12 @@ if (!G.__webMountState) {
     httpRegistered: false,
     wsRegistered: false,
     timer: null,
+    startedAt: Date.now(),
+    // 状态页：最近 60 秒的秒级请求计数 / 后端探测缓存 / 登录失败限流
+    secBuckets: new Map(),
+    health: new Map(),
+    healthAt: 0,
+    loginFails: new Map(),
   }
 }
 const state = G.__webMountState
@@ -204,14 +211,15 @@ function loadRawConfig() {
 }
 
 /* ---------- 后端连通性探测 ---------- */
-function checkHealth(host, port, timeout = 800) {
+function probe(host, port, timeout = 800) {
   return new Promise(resolve => {
+    const t0 = Date.now()
     let settled = false
     const done = ok => {
       if (settled) return
       settled = true
       try { socket.destroy() } catch { /* ignore */ }
-      resolve(ok)
+      resolve({ online: ok, ping: ok ? Date.now() - t0 : -1 })
     }
     const socket = net.connect({ host, port })
     socket.setTimeout(timeout)
@@ -219,6 +227,22 @@ function checkHealth(host, port, timeout = 800) {
     socket.once('timeout', () => done(false))
     socket.once('error', () => done(false))
   })
+}
+
+/* ---------- 最近 60 秒流量 ---------- */
+function touchTraffic() {
+  const sec = Math.floor(Date.now() / 1000)
+  state.secBuckets.set(sec, (state.secBuckets.get(sec) || 0) + 1)
+  if (state.secBuckets.size > 180) {
+    const cut = sec - 120
+    for (const k of state.secBuckets.keys()) if (k < cut) state.secBuckets.delete(k)
+  }
+}
+function trafficBuckets() {
+  const nowSec = Math.floor(Date.now() / 1000)
+  const out = new Array(60).fill(0)
+  for (let i = 0; i < 60; i++) out[i] = state.secBuckets.get(nowSec - 59 + i) || 0
+  return out
 }
 
 function esc(s) {
@@ -353,15 +377,15 @@ export default class WebMount extends plugin {
     const cfg = state.settings
 
     // 内置状态页(优先于所有路由)
-    if (cfg.statusPage && pathname.replace(/\/+$/, '') === STATUS_PATH) {
-      if (cfg.statusToken) {
-        const q = new URLSearchParams(url.includes('?') ? url.slice(url.indexOf('?') + 1) : '')
-        if (q.get('token') !== cfg.statusToken) {
-          res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
-          return res.end('web-mount: 需要口令，请访问 ' + STATUS_PATH + '?token=你的statusToken')
-        }
-      }
-      return this.renderStatus(req, res, url)
+    const isStatus = pathname === STATUS_PATH || pathname === STATUS_PATH + '/' ||
+      pathname.startsWith(STATUS_PATH + '/')
+    if (cfg.statusPage && isStatus) {
+      this.handleStatus(req, res, url, pathname).catch(e => {
+        logger.error('[web-mount] 状态页处理失败: ' + e.message)
+        if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('状态页内部错误: ' + e.message)
+      })
+      return
     }
 
     if (!state.routes.length) return next()
@@ -388,6 +412,7 @@ export default class WebMount extends plugin {
   forward(req, res, proxyPath, route) {
     const st = statOf(route)
     st.count++
+    touchTraffic()
     const startedAt = Date.now()
 
     const headers = { ...req.headers }
@@ -547,88 +572,694 @@ export default class WebMount extends plugin {
   }
 
   /* ---------- 状态页 ---------- */
-  async renderStatus(req, res, url) {
-    const wantJson = /[?&]format=json\b/.test(url)
-    const rows = await Promise.all(state.routes.map(async r => {
-      const s = statOf(r)
-      return {
-        ...r,
-        online: await checkHealth(r.host, r.port, 800),
-        count: s.count,
-        errors: s.errors,
-        lastStatus: s.lastStatus,
-        lastAt: s.lastAt,
-        lastMs: s.lastMs,
-      }
-    }))
+  authCookieValue(token) {
+    return crypto.createHash('sha256').update('web-mount::' + token).digest('hex')
+  }
 
-    if (wantJson) {
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-      return res.end(JSON.stringify({ settings: state.settings, routes: rows }, null, 2))
+  checkAuth(req) {
+    const token = state.settings.statusToken
+    if (!token) return true
+    const cookie = req.headers.cookie || ''
+    const m = cookie.match(/(?:^|;\s*)wm_auth=([^;]+)/)
+    if (m && m[1] === this.authCookieValue(token)) return true
+    const h = req.headers['x-wm-token']
+    if (typeof h === 'string' && h && h === token) return true
+    return false
+  }
+
+  sendJson(res, code, obj) {
+    const body = JSON.stringify(obj, null, 2)
+    res.writeHead(code, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+    })
+    res.end(body)
+  }
+
+  // 读取表单 body：body-parser 可能已消费(则用 req.body)，否则自己读流
+  readFormBody(req) {
+    return new Promise(resolve => {
+      if (req._body && req.body != null) {
+        if (typeof req.body === 'string') return resolve(req.body)
+        if (typeof req.body === 'object') {
+          const p = new URLSearchParams()
+          for (const k of Object.keys(req.body)) p.set(k, String(req.body[k]))
+          return resolve(p.toString())
+        }
+      }
+      if (req.readableEnded) return resolve('')
+      const chunks = []
+      let size = 0
+      req.on('data', c => {
+        size += c.length
+        if (size <= 65536) chunks.push(c)
+      })
+      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+      req.on('error', () => resolve(''))
+    })
+  }
+
+  async handleStatus(req, res, url, pathname) {
+    const cfg = state.settings
+    const sub = pathname.slice(STATUS_PATH.length).replace(/\/+$/, '')
+    const authed = this.checkAuth(req)
+
+    if (sub === '/logout') {
+      res.writeHead(302, {
+        'set-cookie': 'wm_auth=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax',
+        location: STATUS_PATH,
+      })
+      return res.end()
     }
 
-    const totalReq = rows.reduce((a, b) => a + b.count, 0)
-    const totalErr = rows.reduce((a, b) => a + b.errors, 0)
-    const onlineCount = rows.filter(r => r.online).length
+    if (!authed) {
+      if (sub === '/reload' || sub === '/reset') return this.sendJson(res, 401, { ok: false, message: '未授权' })
+      if (/[?&]format=json\b/.test(url)) return this.sendJson(res, 401, { ok: false, message: '未授权' })
+      if (req.method === 'POST' && sub === '') return this.handleLogin(req, res)
+      return this.renderLogin(res, '')
+    }
 
-    const trs = rows.map(r => `
-      <tr>
-        <td><span class="dot ${r.online ? 'ok' : 'bad'}"></span>${esc(r.name)}</td>
-        <td><code>${esc(r.matchPath)}</code>${r.matchReferer ? `<div class="sub">来源 ${esc(r.matchReferer)}</div>` : ''}${r.matchMethod ? `<div class="sub">方法 ${esc(r.matchMethod)}</div>` : ''}</td>
-        <td><code>${esc(r.host)}:${esc(r.port)}${r.prefix !== '/' ? esc(r.prefix) : ''}</code></td>
-        <td>${r.ws ? 'WS' : '-'}</td>
-        <td class="num">${r.count}</td>
-        <td class="num ${r.errors ? 'bad-text' : ''}">${r.errors}</td>
-        <td class="num">${r.lastStatus || '-'}</td>
-        <td class="num">${r.lastMs ? r.lastMs + 'ms' : '-'}</td>
-        <td class="sub">${fmtTime(r.lastAt)}</td>
-      </tr>`).join('')
+    if (sub === '/reload') {
+      try {
+        this.reloadConfig(true)
+        return this.sendJson(res, 200, { ok: true, message: `已重载，生效 ${state.routes.length} 条`, routes: state.routes.length })
+      } catch (e) {
+        return this.sendJson(res, 500, { ok: false, message: e.message })
+      }
+    }
+
+    if (sub === '/reset') {
+      state.stats.clear()
+      state.secBuckets.clear()
+      return this.sendJson(res, 200, { ok: true, message: '统计已清空' })
+    }
+
+    if (sub) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+      return res.end('Not Found')
+    }
+
+    const data = await this.collectStatus()
+    if (/[?&]format=json\b/.test(url)) return this.sendJson(res, 200, data)
+    return this.renderStatusPage(res, data)
+  }
+
+  async handleLogin(req, res) {
+    const ip = req.socket?.remoteAddress || 'unknown'
+    const now = Date.now()
+    const rec = state.loginFails.get(ip) || { n: 0, until: 0 }
+
+    if (rec.until > now) {
+      return this.renderLogin(res, `尝试次数过多，请 ${Math.ceil((rec.until - now) / 1000)} 秒后重试`, 429)
+    }
+
+    const body = await this.readFormBody(req)
+    const token = new URLSearchParams(body).get('token') || ''
+
+    if (token && token === state.settings.statusToken) {
+      state.loginFails.delete(ip)
+      res.writeHead(302, {
+        'set-cookie': `wm_auth=${this.authCookieValue(token)}; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax`,
+        location: STATUS_PATH,
+      })
+      return res.end()
+    }
+
+    rec.n++
+    if (rec.n >= 5) {
+      rec.until = now + 60000
+      rec.n = 0
+    }
+    state.loginFails.set(ip, rec)
+    return this.renderLogin(res, '口令不正确，请重试', 401)
+  }
+
+  async collectStatus() {
+    const cfg = state.settings
+    const now = Date.now()
+
+    // 后端探测做 4 秒缓存，避免自动刷新时反复建 TCP 连接
+    if (now - state.healthAt > 4000 || state.health.size !== state.routes.length) {
+      const list = await Promise.all(state.routes.map(r => probe(r.host, r.port, 700)))
+      state.health = new Map(state.routes.map((r, i) => [statKey(r), list[i]]))
+      state.healthAt = Date.now()
+    }
+
+    const routes = state.routes.map(r => {
+      const s = statOf(r)
+      const h = state.health.get(statKey(r)) || { online: false, ping: -1 }
+      return {
+        name: r.name, matchPath: r.matchPath, matchReferer: r.matchReferer,
+        matchMethod: r.matchMethod, host: r.host, port: r.port,
+        prefix: r.prefix, ws: r.ws,
+        online: !!h.online, ping: h.ping,
+        count: s.count, errors: s.errors,
+        lastStatus: s.lastStatus, lastAt: s.lastAt, lastMs: s.lastMs,
+      }
+    })
+
+    const latencies = routes.filter(r => r.lastMs > 0).map(r => r.lastMs)
+    return {
+      now,
+      uptime: now - state.startedAt,
+      settings: {
+        autoReload: cfg.autoReload,
+        debug: cfg.debug,
+        proxyTimeout: cfg.proxyTimeout,
+        secured: !!cfg.statusToken,
+      },
+      traffic: trafficBuckets(),
+      totals: {
+        routes: routes.length,
+        online: routes.filter(r => r.online).length,
+        req: routes.reduce((a, b) => a + b.count, 0),
+        err: routes.reduce((a, b) => a + b.errors, 0),
+        avgMs: latencies.length ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : 0,
+      },
+      routes,
+    }
+  }
+
+  /* ---- 登录页 ---- */
+  renderLogin(res, error, code) {
+    const html = `<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>web-mount · 验证</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --card:#ffffff; --fg:#111827; --muted:#6b7280; --line:#e5e7eb;
+    --accent:#3b82f6; --accent2:#8b5cf6; --bad:#ef4444;
+    --shadow:0 10px 40px -12px rgba(17,24,39,.18);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{--bg:#0b0e14; --card:#141922; --fg:#e6edf3; --muted:#94a3b8; --line:#232b38;
+          --accent:#60a5fa; --accent2:#a78bfa; --bad:#f87171;
+          --shadow:0 10px 40px -12px rgba(0,0,0,.7);}
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;display:grid;place-items:center;padding:24px;
+    background:var(--bg);color:var(--fg);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background-image:radial-gradient(900px 400px at 50% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 70%);
+  }
+  .box{
+    width:100%;max-width:380px;background:var(--card);border:1px solid var(--line);
+    border-radius:18px;padding:32px 28px;box-shadow:var(--shadow);
+  }
+  .logo{
+    width:46px;height:46px;border-radius:14px;display:grid;place-items:center;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;
+    font-size:22px;margin-bottom:18px;box-shadow:0 6px 18px -6px var(--accent);
+  }
+  h1{margin:0 0 6px;font-size:19px;letter-spacing:.2px}
+  p.sub{margin:0 0 22px;color:var(--muted);font-size:13px}
+  label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:7px;font-weight:600}
+  input[type=password],input[type=text]{
+    width:100%;padding:11px 13px;border-radius:10px;border:1px solid var(--line);
+    background:color-mix(in srgb, var(--bg) 55%, var(--card));color:var(--fg);
+    font-size:15px;outline:none;transition:.18s;letter-spacing:.3px;
+  }
+  input:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent)}
+  button{
+    width:100%;margin-top:16px;padding:12px;border:0;border-radius:10px;cursor:pointer;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;
+    font-size:15px;font-weight:600;letter-spacing:.3px;transition:.18s;
+  }
+  button:hover{filter:brightness(1.06)}
+  button:active{transform:translateY(1px)}
+  .err{
+    margin-top:14px;padding:9px 12px;border-radius:9px;font-size:13px;
+    background:color-mix(in srgb, var(--bad) 12%, transparent);
+    color:var(--bad);border:1px solid color-mix(in srgb, var(--bad) 30%, transparent);
+  }
+  .foot{margin-top:18px;text-align:center;color:var(--muted);font-size:12px}
+</style></head>
+<body>
+<form class="box" method="POST" action="${STATUS_PATH}">
+  <div class="logo">◈</div>
+  <h1>web-mount 状态面板</h1>
+  <p class="sub">该面板已设置访问口令，请输入后继续</p>
+  <label for="token">访问口令</label>
+  <input id="token" name="token" type="password" placeholder="请输入口令" autocomplete="current-password" autofocus required>
+  <button type="submit">进入面板</button>
+  ${error ? `<div class="err">${esc(error)}</div>` : ''}
+  <div class="foot">口令可在锅巴面板 → 端口挂载 → 「状态页口令」里修改</div>
+</form>
+</body></html>`
+
+    res.writeHead(code || 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(html)
+  }
+
+  /* ---- 仪表盘 ---- */
+  renderStatusPage(res, data) {
+    const payload = JSON.stringify(data)
+      .replace(/</g, '\\u003c')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029')
 
     const html = `<!doctype html>
 <html lang="zh-CN"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>web-mount 状态</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>web-mount · 挂载状态</title>
 <style>
-  :root{--bg:#fff;--fg:#1f2328;--muted:#6b7280;--line:#e5e7eb;--card:#f9fafb;--ok:#16a34a;--bad:#dc2626;--accent:#2563eb}
-  @media (prefers-color-scheme: dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;--line:#30363d;--card:#161b22;--ok:#3fb950;--bad:#f85149;--accent:#58a6ff}}
+  :root{
+    --bg:#f5f7fa; --card:#fff; --fg:#111827; --muted:#6b7280; --line:#e8ebf0;
+    --accent:#3b82f6; --accent2:#8b5cf6; --ok:#10b981; --bad:#ef4444; --warn:#f59e0b;
+    --chip:#f1f5f9; --shadow:0 1px 2px rgba(17,24,39,.04),0 8px 24px -16px rgba(17,24,39,.28);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{--bg:#0b0e14; --card:#141922; --fg:#e6edf3; --muted:#94a3b8; --line:#232b38;
+          --accent:#60a5fa; --accent2:#a78bfa; --ok:#34d399; --bad:#f87171; --warn:#fbbf24;
+          --chip:#1b2230; --shadow:0 1px 2px rgba(0,0,0,.5),0 8px 24px -16px rgba(0,0,0,.9);}
+  }
   *{box-sizing:border-box}
-  body{margin:0;padding:24px;background:var(--bg);color:var(--fg);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-  h1{margin:0 0 4px;font-size:20px}
-  .meta{color:var(--muted);font-size:13px;margin-bottom:18px}
-  .cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:96px}
-  .card b{display:block;font-size:20px}
-  .card span{color:var(--muted);font-size:12px}
+  body{
+    margin:0;padding:20px 18px 40px;background:var(--bg);color:var(--fg);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background-image:radial-gradient(1100px 460px at 50% -12%, color-mix(in srgb, var(--accent) 11%, transparent), transparent 70%);
+    background-repeat:no-repeat;
+  }
+  .wrap{max-width:1160px;margin:0 auto}
+
+  /* 顶栏 */
+  .top{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+  .brand{display:flex;align-items:center;gap:12px}
+  .logo{
+    width:40px;height:40px;border-radius:12px;display:grid;place-items:center;flex:none;
+    background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:19px;
+    box-shadow:0 6px 18px -8px var(--accent);
+  }
+  h1{margin:0;font-size:17px;letter-spacing:.2px}
+  .brand p{margin:1px 0 0;font-size:12px;color:var(--muted)}
+  .tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .btn{
+    display:inline-flex;align-items:center;gap:6px;padding:7px 13px;border-radius:9px;cursor:pointer;
+    border:1px solid var(--line);background:var(--card);color:var(--fg);font-size:13px;
+    font-family:inherit;transition:.16s;text-decoration:none;
+  }
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .btn:active{transform:translateY(1px)}
+  .btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:0}
+  .btn.primary:hover{filter:brightness(1.06);color:#fff}
+  .tgl{display:inline-flex;align-items:center;gap:7px;cursor:pointer;user-select:none;font-size:13px;color:var(--muted)}
+  .tgl input{display:none}
+  .tgl i{
+    width:34px;height:19px;border-radius:20px;background:var(--line);position:relative;transition:.2s;flex:none;
+  }
+  .tgl i::after{
+    content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;
+    background:#fff;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.25);
+  }
+  .tgl input:checked + i{background:var(--accent)}
+  .tgl input:checked + i::after{transform:translateX(15px)}
+
+  /* 概览卡片 */
+  .cards{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:14px}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 15px;
+    box-shadow:var(--shadow);position:relative;overflow:hidden;
+  }
+  .card::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+    background:linear-gradient(180deg,var(--accent),var(--accent2));opacity:.9;
+  }
+  .card span{display:block;font-size:11.5px;color:var(--muted);letter-spacing:.4px;margin-bottom:3px}
+  .card b{font-size:23px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+  .card b.ok{color:var(--ok)} .card b.bad{color:var(--bad)}
+  .card em{font-style:normal;font-size:11.5px;color:var(--muted);margin-left:4px}
+
+  /* 面板 */
+  .panel{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    box-shadow:var(--shadow);margin-bottom:14px;overflow:hidden;
+  }
+  .panel-hd{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:12px 16px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600;
+  }
+  .panel-hd .muted{font-weight:400;color:var(--muted)}
+  .panel-hd b{font-variant-numeric:tabular-nums}
+
+  /* 迷你柱状图 */
+  .spark{display:flex;align-items:flex-end;gap:2px;height:72px;padding:12px 16px 8px}
+  .bar{
+    flex:1;min-width:2px;border-radius:2px 2px 0 0;
+    background:linear-gradient(180deg,var(--accent),color-mix(in srgb,var(--accent2) 70%,transparent));
+    transition:height .3s ease, opacity .2s;opacity:.95;
+  }
+  .bar:hover{opacity:1;filter:brightness(1.15)}
+  .bar[data-z]{background:var(--line);opacity:.55}
+  .spark-x{display:flex;justify-content:space-between;padding:0 16px 10px;font-size:11px;color:var(--muted)}
+
+  /* 搜索 */
+  .search{
+    padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:var(--chip);
+    color:var(--fg);font-size:13px;font-family:inherit;outline:none;width:230px;transition:.16s;
+  }
+  .search:focus{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
+
+  /* 表格 */
+  .tw{overflow-x:auto}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-  th{color:var(--muted);font-weight:600;font-size:12px;white-space:nowrap}
-  td.num{text-align:right;font-variant-numeric:tabular-nums}
-  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
-  .sub{color:var(--muted);font-size:11.5px;margin-top:2px}
-  .bad-text{color:var(--bad)}
-  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
-  .dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}
-  .tip{margin-top:16px;color:var(--muted);font-size:12px}
-  a{color:var(--accent)}
-</style></head><body>
-<h1>web-mount</h1>
-<div class="meta">反向代理挂载状态 · ${esc(rows.length)} 条路由 · 桌面端/移动端自适应</div>
-<div class="cards">
-  <div class="card"><b>${rows.length}</b><span>路由总数</span></div>
-  <div class="card"><b style="color:var(--ok)">${onlineCount}</b><span>后端在线</span></div>
-  <div class="card"><b>${totalReq}</b><span>累计请求</span></div>
-  <div class="card"><b style="color:${totalErr ? 'var(--bad)' : 'inherit'}">${totalErr}</b><span>累计错误</span></div>
-  <div class="card"><b>${state.settings.proxyTimeout}ms</b><span>超时</span></div>
+  th{
+    text-align:left;padding:9px 12px;font-size:11.5px;font-weight:600;color:var(--muted);
+    letter-spacing:.4px;white-space:nowrap;background:color-mix(in srgb,var(--bg) 60%,var(--card));
+    border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1;
+  }
+  th[data-k]{cursor:pointer;user-select:none}
+  th[data-k]:hover{color:var(--accent)}
+  th .arrow{opacity:.35;margin-left:3px;font-size:10px}
+  th.on .arrow{opacity:1;color:var(--accent)}
+  td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr{transition:background .14s}
+  tbody tr:hover{background:color-mix(in srgb,var(--accent) 5%,transparent)}
+  .ta-r{text-align:right}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;
+    background:var(--chip);padding:1.5px 6px;border-radius:5px;
+  }
+  .nm{font-weight:600;display:flex;align-items:center;gap:7px}
+  .tags{margin-top:3px;display:flex;gap:4px;flex-wrap:wrap;padding-left:15px}
+  .tag{
+    font-size:10.5px;padding:1px 6px;border-radius:4px;background:var(--chip);color:var(--muted);
+  }
+  .tag.ws{background:color-mix(in srgb,var(--accent2) 14%,transparent);color:var(--accent2)}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none}
+  .dot.ok{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 18%,transparent);animation:pulse 2.4s infinite}
+  .dot.bad{background:var(--bad);box-shadow:0 0 0 3px color-mix(in srgb,var(--bad) 16%,transparent)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+  .err-n{color:var(--bad);font-weight:600}
+  .st-ok{color:var(--ok)} .st-err{color:var(--bad)}
+  .empty{padding:26px 16px;text-align:center;color:var(--muted);font-size:13px}
+
+  .foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:6px}
+  .foot a{color:var(--accent);text-decoration:none}
+  .foot a:hover{text-decoration:underline}
+
+  /* toast */
+  #toast{
+    position:fixed;left:50%;bottom:26px;transform:translate(-50%,20px);opacity:0;pointer-events:none;
+    background:var(--fg);color:var(--card);padding:9px 16px;border-radius:10px;font-size:13px;
+    transition:.22s;box-shadow:0 8px 24px -8px rgba(0,0,0,.4);z-index:9;
+  }
+  #toast.show{opacity:1;transform:translate(-50%,0)}
+
+  @media (max-width:860px){
+    .cards{grid-template-columns:repeat(2,1fr)}
+    .card:last-child{grid-column:span 2}
+    .hide-sm{display:none}
+    .search{width:100%}
+    .panel-hd{flex-wrap:wrap}
+    body{padding:14px 12px 32px}
+  }
+
+  /* 窄屏：表格转卡片式，免横向滑动 */
+  @media (max-width:720px){
+    .tw{overflow:visible;padding:0}
+    table,tbody,tr,td{display:block;width:auto}
+    thead{display:none}
+    tbody tr{
+      border:1px solid var(--line);border-radius:12px;padding:11px 13px;margin:10px;
+      background:color-mix(in srgb,var(--bg) 40%,var(--card));
+    }
+    tbody tr:hover{background:color-mix(in srgb,var(--accent) 6%,var(--card))}
+    td{
+      border:0;padding:3px 0;display:flex;align-items:center;justify-content:space-between;
+      gap:14px;text-align:left !important;
+    }
+    td::before{
+      content:attr(data-l);color:var(--muted);font-size:12px;flex:none;font-weight:500;
+    }
+    td.lead{display:block;padding-bottom:6px;margin-bottom:4px;border-bottom:1px dashed var(--line)}
+    td.lead::before{display:none}
+    td.lead .tags{margin-top:5px}
+    td.num{font-variant-numeric:tabular-nums}
+    td .code-wrap{text-align:right;word-break:break-all}
+  }
+</style></head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="logo">◈</div>
+      <div>
+        <h1>web-mount</h1>
+        <p id="meta">加载中…</p>
+      </div>
+    </div>
+    <div class="tools">
+      <label class="tgl"><input type="checkbox" id="auto" checked><i></i><span>自动刷新</span></label>
+      <button class="btn" id="btn-refresh">刷新</button>
+      <button class="btn" id="btn-reload">重载配置</button>
+      <button class="btn" id="btn-reset">清空统计</button>
+      ${data.settings.secured ? `<a class="btn" href="${STATUS_PATH}/logout" title="退出登录">退出</a>` : ''}
+    </div>
+  </header>
+
+  <section class="cards" id="cards"></section>
+
+  <section class="panel">
+    <div class="panel-hd"><span>最近 60 秒请求</span><span class="muted" id="qps">—</span></div>
+    <div class="spark" id="spark"></div>
+    <div class="spark-x"><span>60 秒前</span><span>30 秒前</span><span>现在</span></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-hd">
+      <span>路由 <b id="cnt">0</b></span>
+      <input class="search" id="q" placeholder="搜索 名称 / 路径 / 端口">
+    </div>
+    <div class="tw">
+      <table>
+        <thead><tr>
+          <th data-k="name">名称 / 匹配</th>
+          <th data-k="target">目标</th>
+          <th data-k="count" class="ta-r">请求</th>
+          <th data-k="errors" class="ta-r">错误</th>
+          <th data-k="lastStatus" class="ta-r">状态</th>
+          <th data-k="lastMs" class="ta-r">耗时</th>
+          <th data-k="lastAt" class="ta-r hide-sm">最近访问</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span id="foot-info"></span>
+    <span>
+      <a href="${STATUS_PATH}?format=json" target="_blank">JSON 接口</a>
+      <span style="opacity:.4"> · </span>
+      <a href="javascript:location.reload()">刷新页面</a>
+    </span>
+  </footer>
 </div>
-<table>
-<thead><tr><th>名称</th><th>匹配</th><th>目标</th><th>WS</th><th>请求</th><th>错误</th><th>状态码</th><th>耗时</th><th>最近访问</th></tr></thead>
-<tbody>${trs || '<tr><td colspan="9" style="color:var(--muted)">暂无启用的路由</td></tr>'}</tbody>
-</table>
-<div class="tip">
-  热重载：${state.settings.autoReload ? '已开启（修改 config.json 后约 2 秒自动生效）' : '已关闭'} ·
-  调试日志：${state.settings.debug ? '已开启' : '已关闭'} ·
-  <a href="${STATUS_PATH}">刷新</a> · <a href="${STATUS_PATH}?format=json">JSON</a>
-</div>
+<div id="toast"></div>
+<script>window.__WM__=${payload};window.__WM_PATH__=${JSON.stringify(STATUS_PATH)};</script>
+<script>
+(function(){
+  'use strict';
+  var PATH = window.__WM_PATH__;
+  var S = window.__WM__ || { routes: [], totals: {}, traffic: [], settings: {} };
+  var sortKey = '', sortDir = 1, kw = '', timer = null;
+
+  function $(id){ return document.getElementById(id); }
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
+    });
+  }
+  function num(n){
+    n = Number(n) || 0;
+    if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+    if (n >= 10000) return (n/1000).toFixed(1) + 'k';
+    return String(n);
+  }
+  function pad(n){ return n < 10 ? '0' + n : String(n); }
+  function time(ts){
+    if (!ts) return '—';
+    var d = new Date(ts);
+    return pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function dur(ms){
+    if (!ms) return '—';
+    if (ms < 1000) return ms + 'ms';
+    return (ms/1000).toFixed(2) + 's';
+  }
+  function uptime(ms){
+    var s = Math.floor(ms/1000);
+    var d = Math.floor(s/86400); s %= 86400;
+    var h = Math.floor(s/3600); s %= 3600;
+    var m = Math.floor(s/60); s %= 60;
+    if (d) return d + '天' + h + '小时';
+    if (h) return h + '小时' + m + '分';
+    if (m) return m + '分' + s + '秒';
+    return s + '秒';
+  }
+  function toast(msg){
+    var t = $('toast');
+    t.textContent = msg; t.classList.add('show');
+    clearTimeout(t._h);
+    t._h = setTimeout(function(){ t.classList.remove('show'); }, 2200);
+  }
+
+  function renderCards(t){
+    var items = [
+      ['路由总数', num(t.routes), '', ''],
+      ['后端在线', num(t.online), t.online === t.routes ? 'ok' : (t.online ? '' : 'bad'), '/' + num(t.routes)],
+      ['累计请求', num(t.req), '', ''],
+      ['累计错误', num(t.err), t.err ? 'bad' : '', ''],
+      ['平均耗时', t.avgMs ? dur(t.avgMs) : '—', '', '']
+    ];
+    var h = '';
+    for (var i = 0; i < items.length; i++){
+      h += '<div class="card"><span>' + items[i][0] + '</span><b class="' + items[i][2] + '">' + items[i][1] + '</b>' + (items[i][3] ? '<em>' + items[i][3] + '</em>' : '') + '</div>';
+    }
+    $('cards').innerHTML = h;
+  }
+
+  function renderSpark(tr){
+    var max = 1;
+    for (var i = 0; i < tr.length; i++) if (tr[i] > max) max = tr[i];
+    var now = Date.now();
+    var h = '';
+    for (var k = 0; k < tr.length; k++){
+      var v = tr[k];
+      var pct = Math.max(2, Math.round(v / max * 100));
+      var d = new Date(now - (tr.length - 1 - k) * 1000);
+      var label = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+      h += '<div class="bar" style="height:' + pct + '%" title="' + label + ' · ' + v + ' 次"' + (v ? '' : ' data-z="1"') + '></div>';
+    }
+    $('spark').innerHTML = h;
+    var total = 0;
+    for (var j = 0; j < tr.length; j++) total += tr[j];
+    $('qps').textContent = '合计 ' + total + ' 次 / 峰值 ' + max + ' 次/秒';
+  }
+
+  function filtered(){
+    var list = S.routes.slice();
+    if (kw){
+      var k = kw.toLowerCase();
+      list = list.filter(function(r){
+        return (r.name + ' ' + r.matchPath + ' ' + r.matchReferer + ' ' + r.host + ':' + r.port + ' ' + r.prefix).toLowerCase().indexOf(k) >= 0;
+      });
+    }
+    if (sortKey){
+      list.sort(function(a, b){
+        var x = a[sortKey], y = b[sortKey];
+        if (sortKey === 'target'){ x = a.host + a.port; y = b.host + b.port; }
+        if (typeof x === 'string' || typeof y === 'string'){ x = String(x || ''); y = String(y || ''); return x.localeCompare(y) * sortDir; }
+        return ((x || 0) - (y || 0)) * sortDir;
+      });
+    }
+    return list;
+  }
+
+  function renderRows(){
+    var list = filtered();
+    $('cnt').textContent = list.length + (list.length !== S.routes.length ? ' / ' + S.routes.length : '');
+    if (!list.length){
+      $('rows').innerHTML = '<tr><td colspan="7" class="empty">' + (S.routes.length ? '没有匹配的路由' : '暂无启用的路由，去 config.json 或锅巴面板添加') + '</td></tr>';
+      return;
+    }
+    var h = '';
+    for (var i = 0; i < list.length; i++){
+      var r = list[i];
+      var tags = '';
+      if (r.matchReferer) tags += '<span class="tag">来源 ' + esc(r.matchReferer) + '</span>';
+      if (r.matchMethod) tags += '<span class="tag">' + esc(r.matchMethod) + '</span>';
+      if (r.ws) tags += '<span class="tag ws">WS</span>';
+      var stCls = r.lastStatus >= 400 ? 'st-err' : (r.lastStatus ? 'st-ok' : '');
+      var target = esc(r.host) + ':' + esc(r.port) + (r.prefix && r.prefix !== '/' ? '<span style="opacity:.6">' + esc(r.prefix) + '</span>' : '');
+      h += '<tr>' +
+        '<td class="lead"><div class="nm"><span class="dot ' + (r.online ? 'ok' : 'bad') + '" title="' + (r.online ? '在线 · ' + r.ping + 'ms' : '无法连接') + '"></span>' + esc(r.name) + '</div>' +
+          '<div class="tags"><code>' + esc(r.matchPath) + '</code>' + tags + '</div></td>' +
+        '<td data-l="目标"><code>' + target + '</code></td>' +
+        '<td class="num" data-l="请求">' + num(r.count) + '</td>' +
+        '<td class="num ' + (r.errors ? 'err-n' : '') + '" data-l="错误">' + (r.errors || '—') + '</td>' +
+        '<td class="num ' + stCls + '" data-l="状态">' + (r.lastStatus || '—') + '</td>' +
+        '<td class="num" data-l="耗时">' + dur(r.lastMs) + '</td>' +
+        '<td class="num hide-sm" data-l="最近" style="opacity:.75">' + time(r.lastAt) + '</td>' +
+      '</tr>';
+    }
+    $('rows').innerHTML = h;
+  }
+
+  function renderMeta(){
+    var st = S.settings || {};
+    $('meta').textContent = S.routes.length + ' 条路由 · 运行 ' + uptime(S.uptime || 0);
+    $('foot-info').innerHTML =
+      '热重载 ' + (st.autoReload ? '<b style="color:var(--ok)">开启</b>' : '关闭') +
+      ' · 调试日志 ' + (st.debug ? '开启' : '关闭') +
+      ' · 超时 ' + (st.proxyTimeout || '-') + 'ms' +
+      ' · 状态页' + (st.secured ? '已加口令' : '未设口令');
+  }
+
+  function render(d){
+    S = d;
+    renderMeta();
+    renderCards(d.totals || {});
+    renderSpark(d.traffic || []);
+    renderRows();
+  }
+
+  function pull(){
+    fetch(PATH + '?format=json', { headers: { 'accept': 'application/json' }, credentials: 'same-origin' })
+      .then(function(r){ if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(render)
+      .catch(function(e){ if (String(e.message) === '401') location.reload(); });
+  }
+
+  function act(path, okMsg){
+    fetch(PATH + path, { method: 'POST', credentials: 'same-origin' })
+      .then(function(r){ return r.json(); })
+      .then(function(d){ toast(d.message || okMsg); pull(); })
+      .catch(function(){ toast('操作失败'); });
+  }
+
+  // 表头排序
+  var ths = document.querySelectorAll('th[data-k]');
+  for (var i = 0; i < ths.length; i++){
+    ths[i].addEventListener('click', function(){
+      var k = this.getAttribute('data-k');
+      if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = 1; }
+      for (var j = 0; j < ths.length; j++){
+        ths[j].classList.toggle('on', ths[j] === this);
+        var a = ths[j].querySelector('.arrow');
+        if (a) a.textContent = (ths[j] === this ? (sortDir > 0 ? '▲' : '▼') : '▲');
+      }
+      renderRows();
+    });
+  }
+
+  $('q').addEventListener('input', function(){ kw = this.value.trim(); renderRows(); });
+  $('btn-refresh').addEventListener('click', function(){ pull(); toast('已刷新'); });
+  $('btn-reload').addEventListener('click', function(){ act('/reload', '已重载'); });
+  $('btn-reset').addEventListener('click', function(){
+    if (confirm('确定清空所有请求统计？')) act('/reset', '统计已清空');
+  });
+
+  var auto = $('auto');
+  function startAuto(){
+    if (timer) clearInterval(timer);
+    if (auto.checked) timer = setInterval(function(){ if (!document.hidden) pull(); }, 3000);
+  }
+  auto.addEventListener('change', startAuto);
+
+  render(S);
+  startAuto();
+})();
+</script>
 </body></html>`
 
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
@@ -661,7 +1292,7 @@ export default class WebMount extends plugin {
         skipped.map(r => `${r.matchPath}(port=${r.port})`).join(' ; '))
     }
     if (state.settings.statusPage) {
-      logger.mark(`[web-mount] 状态页: ${STATUS_PATH}${state.settings.statusToken ? '?token=***' : ''}（后端在线情况/请求统计）`)
+      logger.mark(`[web-mount] 状态页: ${STATUS_PATH}${state.settings.statusToken ? '（已设置访问口令）' : '（未设口令，建议公网暴露时设置）'}`)
     }
     if (state.settings.autoReload) {
       logger.mark('[web-mount] 已开启配置热重载，修改 config.json 后约 2 秒自动生效')
