@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>端口挂载 · web-mount</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="logo">◈</div>
+      <div>
+        <h1>web-mount</h1>
+        <p id="meta">加载中…</p>
+      </div>
+    </div>
+    <div class="tools">
+      <label class="tgl"><input type="checkbox" id="auto" checked><i></i><span>自动刷新</span></label>
+      <button class="btn" id="btn-refresh">刷新</button>
+      <button class="btn" id="btn-config">配置</button>
+      <button class="btn" id="btn-reload">重载配置</button>
+      <button class="btn" id="btn-reset">清空统计</button>
+      <a class="btn" id="btn-logout" href="#" title="退出登录">退出</a>
+    </div>
+  </header>
+
+  <section class="cards" id="cards"></section>
+
+  <section class="panel" id="sites-panel">
+    <div class="panel-hd">
+      <span>服务入口</span>
+      <span class="muted" id="sites-hint">点击在当前页打开</span>
+    </div>
+    <div class="sites" id="sites"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-hd"><span>最近 60 秒请求</span><span class="muted" id="qps">—</span></div>
+    <div class="spark" id="spark"></div>
+    <div class="spark-x"><span>60 秒前</span><span>30 秒前</span><span>现在</span></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-hd">
+      <span>路由 <b id="cnt">0</b></span>
+      <input class="search" id="q" placeholder="搜索 名称 / 路径 / 端口">
+    </div>
+    <div class="tw">
+      <table>
+        <thead><tr>
+          <th data-k="name">名称 / 匹配</th>
+          <th data-k="target">目标</th>
+          <th data-k="count" class="ta-r">请求</th>
+          <th data-k="errors" class="ta-r">错误</th>
+          <th data-k="lastStatus" class="ta-r">状态</th>
+          <th data-k="lastMs" class="ta-r">耗时</th>
+          <th data-k="lastAt" class="ta-r hide-sm">最近访问</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <span id="foot-info"></span>
+    <span><a href="javascript:location.reload()">刷新页面</a></span>
+  </footer>
+</div>
+<div id="toast"></div>
+
+<!-- 页面查看器：在面板内打开已挂载的服务 -->
+<div class="viewer" id="viewer" hidden>
+  <div class="viewer-bar">
+    <span class="vt" id="viewer-title"></span>
+    <div class="vr">
+      <a class="btn" id="viewer-open" href="#" target="_blank" rel="noopener">新标签打开</a>
+      <button class="btn" id="viewer-close">关闭</button>
+    </div>
+  </div>
+  <iframe id="viewer-frame" title="服务页面" referrerpolicy="same-origin"></iframe>
+</div>
+
+<!-- 配置抽屉 -->
+<div class="drawer" id="drawer" hidden>
+  <div class="drawer-mask" id="drawer-mask"></div>
+  <aside class="drawer-panel">
+    <div class="drawer-hd">
+      <span>配置</span>
+      <button class="btn" id="cfg-close">关闭</button>
+    </div>
+    <div class="drawer-body">
+      <div class="cfg-note" id="cfg-note" hidden></div>
+
+      <h4>全局设置</h4>
+      <div class="cfg-grid">
+        <label class="field"><span>配置热重载</span><input type="checkbox" id="cfg-autoReload"></label>
+        <label class="field"><span>调试日志</span><input type="checkbox" id="cfg-debug"></label>
+        <label class="field"><span>状态页</span><input type="checkbox" id="cfg-statusPage"></label>
+        <label class="field"><span>允许嵌入</span><input type="checkbox" id="cfg-allowEmbed"></label>
+        <label class="field"><span>启用配置区</span><input type="checkbox" id="cfg-configEditor"></label>
+        <label class="field"><span>转发超时 (ms)</span><input type="number" id="cfg-proxyTimeout" min="1000" max="600000" step="1000"></label>
+        <label class="field full"><span>状态页口令</span><input type="password" id="cfg-statusToken" placeholder="留空 = 不需要口令（此时独立页不可改配置）" autocomplete="new-password"></label>
+      </div>
+
+      <h4>路由 <button class="btn sm" id="cfg-add">+ 新增一条</button></h4>
+      <div class="cfg-routes" id="cfg-routes"></div>
+    </div>
+    <div class="drawer-ft">
+      <span class="muted" id="cfg-status"></span>
+      <div class="ft-btns">
+        <button class="btn" id="cfg-reload">还原</button>
+        <button class="btn primary" id="cfg-save">保存并应用</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script src="dashboard.js"></script>
+</body>
+</html>

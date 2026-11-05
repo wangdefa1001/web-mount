@@ -1,6 +1,8 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  DEFAULT_SETTINGS, readConfigFile, writeConfigFile, readSettings, normalizeRoute,
+} from './lib/config.js'
 
 // 用插件自身目录定位配置，避免依赖 process.cwd()
 let baseDir = process.cwd()
@@ -9,45 +11,12 @@ try {
 } catch {
   baseDir = path.join(process.cwd(), 'plugins/web-mount')
 }
-const configDir = path.join(baseDir, 'config')
-const configPath = path.join(configDir, 'config.json')
 
-const DEFAULT_SETTINGS = {
-  debug: false,
-  autoReload: true,
-  statusPage: true,
-  statusToken: '',
-  proxyTimeout: 30000,
-}
-
-function readConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(configPath, 'utf8'))
-  } catch {
-    return {}
-  }
-}
-
-// 合并写回：保留文件里其它未知字段，避免保存配置时把全局设置抹掉
-function writeConfig(patch) {
-  const old = readConfig()
-  const next = { ...(old && typeof old === 'object' ? old : {}), ...patch }
-  fs.mkdirSync(configDir, { recursive: true })
-  fs.writeFileSync(configPath, JSON.stringify(next, null, 2))
-}
-
-function normRoute(r) {
-  return {
-    enable: !!r.enable,
-    name: typeof r.name === 'string' ? r.name.trim() : '',
-    matchPath: typeof r.matchPath === 'string' && r.matchPath.trim() ? r.matchPath.trim() : '/',
-    matchReferer: typeof r.matchReferer === 'string' ? r.matchReferer.trim() : '',
-    matchMethod: typeof r.matchMethod === 'string' ? r.matchMethod.trim().toUpperCase() : '',
-    host: typeof r.host === 'string' && r.host.trim() ? r.host.trim() : '127.0.0.1',
-    port: Number(r.port) || 0,
-    prefix: typeof r.prefix === 'string' ? r.prefix.trim() : '',
-    ws: !!r.ws,
-  }
+// 锅巴的 Select 用字符串表达三态，转成内部约定
+function entryToView(v) {
+  if (v === true) return 'show'
+  if (v === false) return 'hide'
+  return ''
 }
 
 export function supportGuoba() {
@@ -87,14 +56,26 @@ export function supportGuoba() {
           field: 'statusPage',
           label: '状态页',
           component: 'Switch',
-          bottomHelpMessage: '开启后访问 /__web-mount__ 查看所有路由、后端在线状态与请求统计',
+          bottomHelpMessage: '开启后访问 /__web-mount__ 查看路由、在线状态与请求统计',
         },
         {
           field: 'statusToken',
           label: '状态页口令',
           component: 'Input',
           componentProps: { placeholder: '留空=不校验；公网暴露时建议设置' },
-          bottomHelpMessage: '设置后需用 /__web-mount__?token=xxx 访问',
+          bottomHelpMessage: '设置后状态页会先弹出登录框；同时允许在状态页里改配置',
+        },
+        {
+          field: 'allowEmbed',
+          label: '允许嵌入',
+          component: 'Switch',
+          bottomHelpMessage: '开启后会把挂载的页面嵌进面板/状态页，并自动去掉后端的 X-Frame-Options',
+        },
+        {
+          field: 'configEditor',
+          label: '页面内配置',
+          component: 'Switch',
+          bottomHelpMessage: '是否允许在状态页/面板页面里直接改路由（锅巴面板始终可改）',
         },
         {
           field: 'debug',
@@ -150,6 +131,20 @@ export function supportGuoba() {
                 bottomHelpMessage: '转发路径 = 该前缀 + 命中后剩余路径。填 / 表示剥掉挂载前缀、映射到后端根目录',
               },
               {
+                field: 'entry',
+                label: '导航入口',
+                component: 'Select',
+                componentProps: {
+                  placeholder: '自动',
+                  options: [
+                    { label: '自动判断', value: '' },
+                    { label: '显示在服务入口', value: 'show' },
+                    { label: '不显示', value: 'hide' },
+                  ],
+                },
+                bottomHelpMessage: '同一端口有多条路由时，标「显示」的那条作为页面入口',
+              },
+              {
                 field: 'ws',
                 label: 'WebSocket',
                 component: 'Switch',
@@ -161,32 +156,40 @@ export function supportGuoba() {
         },
       ],
       getConfigData() {
-        const cfg = readConfig() || {}
+        const cfg = readConfigFile(baseDir) || {}
+        const s = readSettings(cfg)
         return {
-          autoReload: cfg.autoReload === undefined ? DEFAULT_SETTINGS.autoReload : !!cfg.autoReload,
-          statusPage: cfg.statusPage === undefined ? DEFAULT_SETTINGS.statusPage : !!cfg.statusPage,
-          statusToken: typeof cfg.statusToken === 'string' ? cfg.statusToken : '',
-          debug: !!cfg.debug,
-          proxyTimeout: Number(cfg.proxyTimeout) || DEFAULT_SETTINGS.proxyTimeout,
-          routes: Array.isArray(cfg.routes) ? cfg.routes : [],
+          autoReload: s.autoReload,
+          statusPage: s.statusPage,
+          statusToken: s.statusToken,
+          allowEmbed: s.allowEmbed,
+          configEditor: s.configEditor,
+          debug: s.debug,
+          proxyTimeout: s.proxyTimeout,
+          routes: (Array.isArray(cfg.routes) ? cfg.routes : []).map(r => ({
+            ...r,
+            entry: entryToView(r.entry),
+          })),
         }
       },
       setConfigData(data, { Result }) {
         const routes = (data.routes || [])
           .filter(r => r && (r.matchPath || r.port))
-          .map(normRoute)
+          .map(normalizeRoute)
 
         const timeout = Number(data.proxyTimeout)
-        writeConfig({
+        writeConfigFile(baseDir, {
           autoReload: !!data.autoReload,
           statusPage: !!data.statusPage,
           statusToken: typeof data.statusToken === 'string' ? data.statusToken.trim() : '',
+          allowEmbed: data.allowEmbed === undefined ? DEFAULT_SETTINGS.allowEmbed : !!data.allowEmbed,
+          configEditor: data.configEditor === undefined ? DEFAULT_SETTINGS.configEditor : !!data.configEditor,
           debug: !!data.debug,
           proxyTimeout: Number.isFinite(timeout) && timeout >= 1000 ? Math.min(timeout, 600000) : DEFAULT_SETTINGS.proxyTimeout,
           routes,
         })
 
-        const tip = data.autoReload ? '已保存，约 2 秒后自动生效' : '已保存，重启 Yunzai 后生效'
+        const tip = data.autoReload ? '约 2 秒后自动生效' : '重启 Yunzai 后生效'
         return Result.ok({}, `已保存 ${routes.length} 条路由，${tip}~`)
       },
     },

@@ -1,20 +1,132 @@
 {
+  "allowEmbed": true,
+  "configEditor": true,
   "debug": false,
   "autoReload": true,
   "statusPage": true,
   "statusToken": "",
   "proxyTimeout": 30000,
   "routes": [
-    { "enable": true, "name": "meme预览站", "matchPath": "/memes", "matchReferer": "", "matchMethod": "", "host": "127.0.0.1", "port": 3132, "prefix": "/memes", "ws": false },
-    { "enable": true, "name": "GsCore面板", "matchPath": "/zy", "matchReferer": "", "matchMethod": "", "host": "127.0.0.1", "port": 8765, "prefix": "/app", "ws": false },
-    { "enable": true, "name": "GsCore资源", "matchPath": "/app", "matchReferer": "", "matchMethod": "", "host": "127.0.0.1", "port": 8765, "prefix": "/app", "ws": false },
-    { "enable": true, "name": "NapCat WebUI", "matchPath": "/webui", "matchReferer": "", "matchMethod": "", "host": "127.0.0.1", "port": 6099, "prefix": "/webui", "ws": true },
-    { "enable": true, "name": "NapCat WS", "matchPath": "/ws", "matchReferer": "", "matchMethod": "", "host": "127.0.0.1", "port": 6099, "prefix": "/ws", "ws": true },
-    { "enable": true, "name": "NapCat文件", "matchPath": "/files", "matchReferer": "", "matchMethod": "", "host": "127.0.0.1", "port": 6099, "prefix": "/files", "ws": false },
-    { "enable": true, "name": "NapCat入口", "matchPath": "/ncqq", "matchReferer": "", "matchMethod": "", "host": "127.0.0.1", "port": 6099, "prefix": "/", "ws": false },
-    { "enable": true, "name": "GsCore API", "matchPath": "/api", "matchReferer": "/zy|/app", "matchMethod": "", "host": "127.0.0.1", "port": 8765, "prefix": "/api", "ws": false },
-    { "enable": true, "name": "NapCat API", "matchPath": "/api", "matchReferer": "/webui|/ncqq", "matchMethod": "", "host": "127.0.0.1", "port": 6099, "prefix": "/api", "ws": false },
-    { "enable": false, "name": "青龙面板(设 QlBaseUrl=/qinglong/ 后前缀填 /)", "matchPath": "/qinglong", "matchReferer": "", "matchMethod": "", "host": "127.0.0.1", "port": 5700, "prefix": "/", "ws": false },
-    { "enable": false, "name": "示例调试页面(/echo 需后端在 8899)", "matchPath": "/echo", "matchReferer": "", "matchMethod": "", "host": "127.0.0.1", "port": 8899, "prefix": "/", "ws": false }
+    {
+      "enable": true,
+      "name": "meme预览站",
+      "matchPath": "/memes",
+      "matchReferer": "",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 3132,
+      "prefix": "/memes",
+      "ws": false
+    },
+    {
+      "enable": true,
+      "name": "GsCore面板",
+      "matchPath": "/zy",
+      "matchReferer": "",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 8765,
+      "prefix": "/app",
+      "ws": false
+    },
+    {
+      "enable": true,
+      "name": "GsCore资源",
+      "matchPath": "/app",
+      "matchReferer": "",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 8765,
+      "prefix": "/app",
+      "ws": false
+    },
+    {
+      "enable": true,
+      "name": "NapCat WebUI",
+      "matchPath": "/webui",
+      "matchReferer": "",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 6099,
+      "prefix": "/webui",
+      "ws": true
+    },
+    {
+      "enable": true,
+      "name": "NapCat WS",
+      "matchPath": "/ws",
+      "matchReferer": "",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 6099,
+      "prefix": "/ws",
+      "ws": true
+    },
+    {
+      "enable": true,
+      "name": "NapCat文件",
+      "matchPath": "/files",
+      "matchReferer": "",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 6099,
+      "prefix": "/files",
+      "ws": false
+    },
+    {
+      "enable": true,
+      "name": "NapCat入口",
+      "matchPath": "/ncqq",
+      "matchReferer": "",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 6099,
+      "prefix": "/",
+      "ws": false
+    },
+    {
+      "enable": true,
+      "name": "GsCore API",
+      "matchPath": "/api",
+      "matchReferer": "/zy|/app",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 8765,
+      "prefix": "/api",
+      "ws": false
+    },
+    {
+      "enable": true,
+      "name": "NapCat API",
+      "matchPath": "/api",
+      "matchReferer": "/webui|/ncqq",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 6099,
+      "prefix": "/api",
+      "ws": false
+    },
+    {
+      "enable": false,
+      "name": "青龙面板(设 QlBaseUrl=/qinglong/ 后前缀填 /)",
+      "matchPath": "/qinglong",
+      "matchReferer": "",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 5700,
+      "prefix": "/",
+      "ws": false
+    },
+    {
+      "enable": false,
+      "name": "示例调试页面(/echo 需后端在 8899)",
+      "matchPath": "/echo",
+      "matchReferer": "",
+      "matchMethod": "",
+      "host": "127.0.0.1",
+      "port": 8899,
+      "prefix": "/",
+      "ws": false
+    }
   ]
 }
