@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const suites = [
+  ['路由匹配（路径 / 来源 / 方法 / 优先级）', 'route.mjs'],
   ['核心逻辑与兼容性（归一化 / 迁移 / 入口聚合）', 'compat.mjs'],
   ['配置原子写入与坏文件兜底', 'atomic.mjs'],
   ['端到端：真实启动插件 + 真实 HTTP 请求', 'e2e.mjs'],

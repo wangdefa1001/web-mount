@@ -13,6 +13,12 @@
 
 ---
 
+## 🆕 v1.5.4 变更
+
+- **改(结构)**:`index.js` 从 837 行拆成 238 行的入口 + `lib/route.js`(匹配)、`lib/proxy.js`(转发)、`lib/status-page.js`(状态页)。**行为与 v1.5.3 完全一致**,只换文件位置。
+- **加**:`test/route.mjs`(39 项)单独覆盖路由层 —— 这一层是「请求打到哪个后端」的唯一决策点,不依赖 HTTP 服务即可测试。
+- **删**:一处从未被调用的 `fmtTime()`。
+
 ## 🆕 v1.5.3 变更
 
 - **修**:服务入口在「剥离前缀」(`prefix: "/"`)场景下会丢卡片 —— 同端口上 `/ncqq` 会把 `/webui` 顶掉。
@@ -256,7 +262,7 @@ GET  /__web-mount__/logout            # 退出登录
 
 ```
 plugins/web-mount/
-├── index.js            # 主入口:反向代理 + WebSocket + 独立状态页
+├── index.js            # 插件入口:生命周期 / 注册监听 / 热重载 / 启动日志
 ├── guoba.support.js    # 锅巴「插件配置」表单(左侧菜单里的那套)
 ├── guoba/              # 锅巴扩展页面(本仓库自带)
 │   ├── index.js        #   init(ctx) 注册页面与接口
@@ -264,6 +270,9 @@ plugins/web-mount/
 │   ├── dashboard.css
 │   └── dashboard.js
 ├── lib/
+│   ├── route.js        # 路径与路由匹配(纯函数,可单测)
+│   ├── proxy.js        # HTTP / WebSocket 反向代理
+│   ├── status-page.js  # 状态页:鉴权 / 登录 / 配置接口 / 渲染
 │   ├── config.js       # config.json 的唯一读写入口(归一化/迁移/原子写)
 │   └── status.js       # 运行状态与统计(两个页面共用)
 ├── config/
@@ -272,6 +281,9 @@ plugins/web-mount/
 ├── scripts/            # 发布/初始化辅助脚本
 └── test/               # 自检脚本(node test/run-all.mjs)
 ```
+
+> 分工原则:**只改转发行为就动 `lib/proxy.js`,只改匹配规则就动 `lib/route.js`**,两者都不需要碰插件生命周期。
+
 
 > 只在面板里看的话,可以把「状态页」开关关掉(`statusPage: false`),少一个对外入口,照样能在锅巴里查看。
 > 调试:改 `guoba/` 下的 html/css/js 刷新浏览器即可;改了 `guoba/index.js`(页面描述或接口)需要在页面右上角点「**重新扫描**」,不用重启 Bot。
