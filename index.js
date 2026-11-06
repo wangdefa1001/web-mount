@@ -90,7 +90,7 @@ export default class WebMount extends plugin {
 
   /* ---------- 配置加载 / 热重载 ---------- */
   reloadConfig(isReload) {
-    ensureConfig(pluginDir, logger)
+    state.firstRun = ensureConfig(pluginDir, logger)
     const raw = readConfigFile(pluginDir, logger)
     if (!raw) logger.error('[web-mount] 读取 config.json 失败（将使用空路由）')
     const cfg = normalizeConfig(raw || {})
@@ -113,6 +113,11 @@ export default class WebMount extends plugin {
 
     if (isReload) {
       logger.mark(`[web-mount] 配置已热重载，当前生效 ${state.routes.length} 条路由`)
+    }
+    if (state.firstRun) {
+      // 首次安装：模板里没有预置路由（免得把别人的端口抄进自己的配置），
+      // 这里直接把入口给出来，省得去翻文档找状态页地址
+      logger.mark(`[web-mount] 首次运行，配置已生成（还没有任何挂载）。打开 ${STATUS_PATH} 添加第一条路由`)
     }
     return cfg
   }
@@ -295,7 +300,7 @@ export default class WebMount extends plugin {
       const extra = derived.length ? `（另自动生成 ${derived.length} 条 /api 分流）` : ''
       logger.mark(`[web-mount] 启动完成，已挂载 ${manual.length} 条${extra}: ${list}`)
     } else {
-      logger.warn('[web-mount] 没有可用的路由，请在 config.json 或锅巴面板里添加')
+      logger.warn('[web-mount] 还没有任何挂载。在状态页/锅巴里添加一条路由，或直接编辑 config.json')
     }
 
     if (skipped.length) {

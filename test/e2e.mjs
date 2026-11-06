@@ -77,6 +77,7 @@ const server = http.createServer((req, res) => {
 globalThis.Bot = { express, server, logger: globalThis.logger }
 
 const mod = await import(path.join(PLUGIN, 'index.js') + '?t=' + Date.now())
+const { state: state0 } = await import(path.join(PLUGIN, 'lib/status.js'))
 const plugin = new mod.default()
 await plugin.init()
 
@@ -617,6 +618,62 @@ plugin.reloadConfig(true)
   })
   plugin.reloadConfig(true)
   check("静音：'/' 兜底路由不会被静音（否则整站日志全没了）", !quiet.includes('/'), quiet, 'not contains /')
+}
+
+/* ---------- 18. 首次安装：没有 config.json 时从模板生成，且不带任何预置路由 ---------- */
+{
+  const hadCfg = fs.existsSync(CFG_FILE)
+  const savedCfg = hadCfg ? fs.readFileSync(CFG_FILE) : null
+  try {
+    fs.rmSync(CFG_FILE, { force: true })
+
+    const logs = []
+    const realMark = globalThis.logger.mark
+    const realInfo = globalThis.logger.info
+    globalThis.logger.mark = (...a) => {
+      logs.push(['mark', a.join(' ')])
+      realMark(...a)
+    }
+    globalThis.logger.info = (...a) => {
+      logs.push(['info', a.join(' ')])
+      realInfo(...a)
+    }
+
+    plugin.reloadConfig(false)
+
+    globalThis.logger.mark = realMark
+    globalThis.logger.info = realInfo
+
+    check('首次安装：config.json 被自动生成', fs.existsSync(CFG_FILE), false, true)
+    const written = JSON.parse(fs.readFileSync(CFG_FILE, 'utf8'))
+    check('首次安装：生成的文件没有任何预置路由', written.routes.length === 0, written.routes.length, 0)
+    check('首次安装：运行时也没有任何路由', plugin.status && state0.routes.length === 0, state0.routes.length, 0)
+    check(
+      '首次安装：日志里给出了状态页入口',
+      logs.some(([, m]) => m.includes('首次运行') && m.includes('/__web-mount__')),
+      logs.filter(([, m]) => m.includes('web-mount')).map(([, m]) => m),
+      '含「首次运行」与 /__web-mount__ 的日志',
+    )
+    check(
+      '首次安装：提示里不再叫用户去翻 config.json 手写',
+      !logs.some(([, m]) => m.includes('没有可用的路由，请在 config.json')),
+      logs.map(([, m]) => m),
+      '无旧提示',
+    )
+
+    // 不是首次时不该再报「首次运行」
+    const logs2 = []
+    globalThis.logger.mark = (...a) => {
+      logs2.push(a.join(' '))
+      realMark(...a)
+    }
+    plugin.reloadConfig(true)
+    globalThis.logger.mark = realMark
+    check('已有配置时不再提示首次运行', !logs2.some(m => m.includes('首次运行')), logs2, '不含「首次运行」')
+  } finally {
+    if (savedCfg) fs.writeFileSync(CFG_FILE, savedCfg)
+    else fs.rmSync(CFG_FILE, { force: true })
+  }
 }
 
 /* ---------- 收尾 ---------- */

@@ -30,6 +30,18 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 
 重启 Yunzai。需要 Yunzai 的 `Bot.express` 与 `Bot.server`（即 HTTP 服务已开启）。
 
+**首次启动不会带任何预置路由**——免得把别人的端口、路径抄进你的配置。日志会给出引导：
+
+```
+[web-mount] 未找到 config.json，已从 default_config.json 复制模板
+[web-mount] 首次运行，配置已生成（还没有任何挂载）。打开 /__web-mount__ 添加第一条路由
+```
+
+两种加路由的方式：
+
+- **面板里点**（推荐）：打开 `http://127.0.0.1:<你的HTTP端口>/__web-mount__`，或锅巴侧边栏的「端口挂载」，在配置区填一行即可；
+- **手写**：`config/default_config.json` 只有全局设置，`routes` 是空数组。想参考真实写法看 `config/example_routes.json`（纯示例，插件不读它），整段复制进 `config/config.json` 再改端口。
+
 升级：`cd plugins/web-mount && git pull`，然后**重启 Yunzai**（改的是 JS，热重载只监听配置文件）。
 
 ---
@@ -55,6 +67,14 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 **优先级**：路径越长越优先（`/memes` 先于 `/`），同长度按配置顺序，首条命中即转发。所以 `/api` 的多条分流规则，把更精确的放前面。
 
 > `matchReferer` 只比对 pathname，且默认要求同源（`refererSameOriginOnly`）。Referer 谁都能伪造，不加这条限制，陌生网页就能把你的 `/api` 打到 GsCore/NapCat。
+
+除 `port` 外都可以省。最小的一条路由：
+
+```json
+{ "enable": true, "matchPath": "/zy", "port": 8765, "autoApi": true }
+```
+
+`host` 默认 `127.0.0.1`、`prefix` 默认 `/`、`name` 省略时自动生成、`matchReferer`/`matchMethod`/`ws`/`entry` 省略即不限。上面这行的意思正好是「GsCore 面板挂在 `/zy`，它的 `/api` 请求也一起分过去」。
 
 ---
 
@@ -254,7 +274,7 @@ plugins/web-mount/
 │   ├── status-page.js  # 状态页：鉴权 / 登录 / 配置接口 / 渲染
 │   ├── config.js       # config.json 的唯一读写入口（归一化 / 迁移 / 原子写）
 │   └── status.js       # 运行状态与统计
-├── config/             # default_config.json 入库，config.json 本地
+├── config/             # default_config.json 模板 / example_routes.json 示例 / config.json 本地实配
 └── test/               # 自检
 ```
 
@@ -274,7 +294,7 @@ npm run check   # lint + test，提交前跑这个
 
 ## 更新
 
-- **v1.5.6**：新增 `quietProxyLog`，把已挂载路径从框架 HTTP 日志里降级，避免请求头里的 Token 落盘。
+- **v1.5.6**：新增 `quietProxyLog`，把已挂载路径从框架 HTTP 日志里降级，避免请求头里的 Token 落盘；配置模板清空预置路由，示例移到 `example_routes.json`。
 - **v1.5.5**：新增「自动 /api」，页面路由勾一下即自动生成 `/api` 分流；锅巴配置表单与配置模块合并为一份字段定义；引入 eslint + prettier 并全量格式化；精简本文档。
 - **v1.5.4**：`index.js` 837 行拆成入口 + `route`/`proxy`/`status-page` 三个模块，行为不变。
 - **v1.5.3**：修入口丢卡、来源可伪造、迁移丢路径、端口静默丢弃，配置改原子写。

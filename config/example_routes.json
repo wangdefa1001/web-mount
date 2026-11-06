@@ -1,0 +1,50 @@
+{
+  "_说明": "这是示例，不会被自动加载。想用其中某条，把那个对象整段复制到 config/config.json 的 routes 数组里，再改 host / port。文件名以 _ 开头，插件不会读它。",
+  "routes": [
+    {
+      "enable": true,
+      "name": "GsCore面板",
+      "matchPath": "/zy",
+      "host": "127.0.0.1",
+      "port": 8765,
+      "prefix": "/app",
+      "autoApi": true
+    },
+    {
+      "enable": true,
+      "name": "NapCat WebUI",
+      "matchPath": "/webui",
+      "host": "127.0.0.1",
+      "port": 6099,
+      "prefix": "/webui",
+      "ws": true,
+      "autoApi": true
+    },
+    {
+      "enable": true,
+      "name": "青龙面板（需先设 QlBaseUrl=/qinglong/）",
+      "matchPath": "/qinglong",
+      "host": "127.0.0.1",
+      "port": 5700,
+      "prefix": "/"
+    },
+    {
+      "enable": true,
+      "name": "静态站",
+      "matchPath": "/site",
+      "host": "127.0.0.1",
+      "port": 8080,
+      "prefix": "/site"
+    },
+    {
+      "enable": true,
+      "name": "只转发 WebSocket",
+      "matchPath": "/ws",
+      "host": "127.0.0.1",
+      "port": 6099,
+      "prefix": "/ws",
+      "ws": true,
+      "entry": false
+    }
+  ]
+}

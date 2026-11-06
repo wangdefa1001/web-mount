@@ -1,5 +1,8 @@
-import { normalizeConfig, readSettings } from '../lib/config.js'
+import fs from 'node:fs'
+import path from 'node:path'
+import { DEFAULT_SETTINGS, normalizeConfig, readSettings } from '../lib/config.js'
 import { computeServices } from '../lib/status.js'
+import { REPO } from './sandbox.mjs'
 let fail = 0
 const t = (n, cond, got) => {
   console.log((cond ? 'PASS  ' : 'FAIL  ') + n)
@@ -158,6 +161,36 @@ t(
 
 // 11. 空路由不出卡
 t('空路由不出卡', computeServices([]).length === 0, '')
+
+/* ---------- 12. 配置模板不能把人家的端口抄进新安装 ---------- *
+ * 早期模板里塞了作者自己环境的 memes/GsCore/NapCat 真实条目，还不带 enable，
+ * 新用户装上就是一堆指向空端口的 502 —— 而且 copy 的时候就成「他自己的配置」了。
+ */
+{
+  const tpl = JSON.parse(fs.readFileSync(path.join(REPO, 'config/default_config.json'), 'utf8'))
+  t('模板的 routes 必须为空', Array.isArray(tpl.routes) && tpl.routes.length === 0, tpl.routes)
+  // 模板里的每个字段都应该能对应到一个真实设置项，不留历史遗留键
+  const known = new Set([...Object.keys(DEFAULT_SETTINGS), 'routes'])
+  const extra = Object.keys(tpl).filter(k => !known.has(k))
+  t('模板没有多余/过期的字段', extra.length === 0, extra)
+  const missing = Object.keys(DEFAULT_SETTINGS).filter(k => !(k in tpl))
+  t('模板覆盖了全部设置项（拿它当文档看）', missing.length === 0, missing)
+
+  const cfg = normalizeConfig(tpl)
+  t('模板本身能正常归一化（零路由不报错）', cfg.routes.length === 0, cfg.routes.length)
+  t('模板新装后生效路由为 0', computeServices(cfg.routes).length === 0, '')
+
+  // 示例文件只作参考，字段必须是合法的路由形状，否则复制过去就出错
+  const ex = JSON.parse(fs.readFileSync(path.join(REPO, 'config/example_routes.json'), 'utf8'))
+  t('示例文件 routes 非空（否则没有参考价值）', ex.routes.length > 0, ex.routes.length)
+  const exNorm = normalizeConfig({ routes: ex.routes }).routes
+  t('示例里的每条路由都能被归一化', exNorm.length === ex.routes.length, exNorm.length)
+  t(
+    '示例里的路由端口都合法',
+    exNorm.every(r => r.port > 0),
+    exNorm.map(r => `${r.name}=${r.port}`),
+  )
+}
 
 console.log(fail ? `\n${fail} 项失败` : '\n全部通过')
 process.exit(fail ? 1 : 0)
