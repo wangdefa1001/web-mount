@@ -117,6 +117,36 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 | `configEditor` | `true` | 是否允许在页面里改配置 |
 | `refererSameOriginOnly` | `true` | 来源分流只认同源；关掉等于允许任意站点伪造来源 |
 | `trailingSlashRedirect` | `true` | 访问 `/memes` 时 302 到 `/memes/`，让 `./x.js` 这类相对资源解析正确 |
+| `quietProxyLog` | `true` | 把已挂载路径从 Yunzai 自带的 HTTP 日志里降级为 debug，见下节 |
+
+---
+
+## 日志里的 `HTTP GET 请求 { headers: ... }` 是谁打的
+
+**不是 web-mount**，是 Yunzai 框架自带的。trss-yunzai 在 `lib/bot.js` 的 `serverHandle` 里对**每一个**进入 HTTP 端口的请求打一条，并把整份请求头抄出来：
+
+```
+[http://host:port/api/version <= ip] HTTP GET 请求 { headers: {
+  ... authorization: 'Bearer xxxxx', referer: 'https://host/zy/' ...
+} }
+```
+
+web-mount 自己的日志一律带 `[web-mount]` 前缀，只在 `debug` 打开时输出，且只打方法、路径、状态码、耗时，**从不打印请求头**：
+
+```
+[web-mount] GET /api/version -> 127.0.0.1:8765/api/version 200 5ms
+```
+
+真正的麻烦在于：GsCore、NapCat 这类面板的访问令牌就在 `authorization` 头里，框架那条日志会把**明文 Token** 写进日志文件，附带的 `referer` 也把内部路径暴露了。
+
+所以默认 `quietProxyLog: true` —— 启动时把每条路由的 `matchPath`（以及 `/__web-mount__`）push 进 `Bot.express.quiet`。框架对命中的路径把日志级别从 `mark` 降到 `debug`，默认不显示；真要排查时把日志级别开到 debug 依然能看到。
+
+- `matchPath` 为 `/` 的兜底路由**不会**加进去 —— 那等于静音整站日志；
+- 热重载换了路径会精确撤销旧条目，也不动别的插件 push 进去的路径；
+- 老版本 Yunzai 没有这个数组，直接跳过，不影响运行；
+- 想还原原始行为：`"quietProxyLog": false`。
+
+> 如果这些日志已经贴到过群里、issue 或截图里，**去面板后台重置那个 Token**。日志里的是可直接用的凭证。
 
 ---
 
@@ -244,6 +274,7 @@ npm run check   # lint + test，提交前跑这个
 
 ## 更新
 
+- **v1.5.6**：新增 `quietProxyLog`，把已挂载路径从框架 HTTP 日志里降级，避免请求头里的 Token 落盘。
 - **v1.5.5**：新增「自动 /api」，页面路由勾一下即自动生成 `/api` 分流；锅巴配置表单与配置模块合并为一份字段定义；引入 eslint + prettier 并全量格式化；精简本文档。
 - **v1.5.4**：`index.js` 837 行拆成入口 + `route`/`proxy`/`status-page` 三个模块，行为不变。
 - **v1.5.3**：修入口丢卡、来源可伪造、迁移丢路径、端口静默丢弃，配置改原子写。

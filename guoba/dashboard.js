@@ -388,6 +388,7 @@
     $('cfg-configEditor').checked = d.configEditor !== false;
     $('cfg-refererSameOriginOnly').checked = d.refererSameOriginOnly !== false;
     $('cfg-trailingSlashRedirect').checked = d.trailingSlashRedirect !== false;
+    $('cfg-quietProxyLog').checked = d.quietProxyLog !== false;
     $('cfg-proxyTimeout').value = d.proxyTimeout || 30000;
     $('cfg-statusToken').value = d.statusToken || '';
 
@@ -439,6 +440,7 @@
       configEditor: $('cfg-configEditor').checked,
       refererSameOriginOnly: $('cfg-refererSameOriginOnly').checked,
       trailingSlashRedirect: $('cfg-trailingSlashRedirect').checked,
+      quietProxyLog: $('cfg-quietProxyLog').checked,
       proxyTimeout: Number($('cfg-proxyTimeout').value) || 30000,
       statusToken: $('cfg-statusToken').value,
       routes: routes,

@@ -109,10 +109,49 @@ export default class WebMount extends plugin {
     state.displayRoutes = effective
     state.wsRoutes = state.routes.filter(r => r.ws)
 
+    this.syncQuietLog()
+
     if (isReload) {
       logger.mark(`[web-mount] 配置已热重载，当前生效 ${state.routes.length} 条路由`)
     }
     return cfg
+  }
+
+  /* ---------- 把插件接管的路径从 Yunzai 框架的 HTTP 日志里降级 ---------- *
+   * 框架 lib/bot.js 的 serverHandle 会对每个请求打一条：
+   *   [http://host/path <= ip] HTTP GET 请求 { headers: {...} }
+   * 里面是整个 req.headers —— 包括 authorization 里的 Bearer Token。
+   * 被我们代理走的请求本来就有 web-mount 自己的访问日志，不必再往框架日志里
+   * 抄一遍请求头（还会把面板的 Token 落到日志文件里）。
+   *
+   * 框架的做法是：quiet 数组里的前缀命中时，日志从 mark 降级为 debug。
+   * 这里只往里塞「我们自己接管的路径」，不动别的路由，热重载时精确撤销。
+   * 老版本 Yunzai（没有这个数组）静默跳过。
+   * ------------------------------------------------------------------ */
+  syncQuietLog() {
+    const quiet = Bot.express && Bot.express.quiet
+    if (!Array.isArray(quiet)) return
+
+    for (const p of state.quietPaths || []) {
+      const i = quiet.indexOf(p)
+      if (i !== -1) quiet.splice(i, 1)
+    }
+    state.quietPaths = []
+
+    if (!state.settings.quietProxyLog) return
+
+    const want = new Set()
+    for (const r of state.routes) {
+      // '/' 兜底会静音整站日志，绝不能加
+      if (r.matchPath && r.matchPath !== '/') want.add(r.matchPath)
+    }
+    if (state.settings.statusPage) want.add(STATUS_PATH)
+
+    for (const p of want) {
+      if (quiet.includes(p)) continue
+      quiet.push(p)
+      state.quietPaths.push(p)
+    }
   }
 
   // 监听 config.json 修改时间，实现保存即生效(免重启)
@@ -273,6 +312,12 @@ export default class WebMount extends plugin {
     }
     if (state.settings.autoReload) {
       logger.mark('[web-mount] 已开启配置热重载，修改 config.json 后约 2 秒自动生效')
+    }
+    if (state.settings.quietProxyLog && state.quietPaths.length) {
+      logger.mark(
+        `[web-mount] 已把 ${state.quietPaths.length} 条挂载路径的框架 HTTP 日志降级为 debug`
+          + '（避免请求头里的 Token 落到日志；设 quietProxyLog:false 可还原）',
+      )
     }
   }
 }

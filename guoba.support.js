@@ -89,6 +89,13 @@ export function supportGuoba() {
           bottomHelpMessage: '开启后每次转发都会在控制台打印请求、状态码与耗时',
         },
         {
+          field: 'quietProxyLog',
+          label: '静音框架 HTTP 日志',
+          component: 'Switch',
+          bottomHelpMessage:
+            '开启时（推荐）把已挂载路径从 Yunzai 自带的「HTTP GET 请求 { headers }」日志里降级为 debug —— 那条日志会把整份请求头打出来，包括面板的 Bearer Token。插件自己的转发日志不受影响',
+        },
+        {
           field: 'proxyTimeout',
           label: '转发超时(ms)',
           component: 'InputNumber',

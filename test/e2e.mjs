@@ -54,6 +54,9 @@ function writeCfg(obj) {
 /* ---------- 启动被测插件 ---------- */
 const express = {
   stack: [],
+  // Yunzai(trss) 的 Bot.express 上挂着 quiet 数组：命中的路径把它的
+  // 「HTTP GET 请求 { headers }」日志降级为 debug。这里照实模拟。
+  quiet: [],
   use(fn) {
     this.stack.push(fn)
   },
@@ -537,6 +540,83 @@ plugin.reloadConfig(true)
   check('WS 无来源 -> 兜底后端B(3132)', hits[2] === 'B', hits, ['A', 'B', 'B'])
   srvA.close()
   srvB.close()
+}
+
+/* ---------- 17. 框架 HTTP 日志静音：把接管路径塞进 Bot.express.quiet ---------- */
+{
+  const quiet = express.quiet
+  writeCfg({
+    routes: [
+      { enable: true, name: '面板', matchPath: '/zy', host: '127.0.0.1', port: 8765, prefix: '/app' },
+      {
+        enable: true,
+        name: '接口',
+        matchPath: '/api',
+        matchReferer: '/zy',
+        host: '127.0.0.1',
+        port: 8765,
+        prefix: '/api',
+      },
+    ],
+    autoReload: false,
+    statusPage: true,
+    statusToken: '',
+    quietProxyLog: true,
+  })
+  plugin.reloadConfig(true)
+  check('静音：/zy 被加入 quiet', quiet.includes('/zy'), quiet, 'contains /zy')
+  check('静音：/api 被加入 quiet', quiet.includes('/api'), quiet, 'contains /api')
+  check('静音：状态页路径被加入 quiet', quiet.includes('/__web-mount__'), quiet, 'contains /__web-mount__')
+
+  // 热重载换了路径：旧的要撤掉，不能只加不减
+  writeCfg({
+    routes: [{ enable: true, name: '新面板', matchPath: '/panel', host: '127.0.0.1', port: 8765, prefix: '/' }],
+    autoReload: false,
+    statusPage: true,
+    quietProxyLog: true,
+  })
+  plugin.reloadConfig(true)
+  check('静音：热重载后旧的 /zy 被撤销', !quiet.includes('/zy'), quiet, 'not contains /zy')
+  check('静音：热重载后新的 /panel 已加入', quiet.includes('/panel'), quiet, 'contains /panel')
+
+  // 按框架 lib/bot.js 的 serverHandle 复刻判定逻辑：命中 quiet 就降级为 debug。
+  // 这条是在验证「我们塞进去的东西，框架确实会按预期降级」，而不只是数组里有值。
+  const levelOf = u => (quiet.some(p => u.startsWith(p)) ? 'debug' : 'mark')
+  check('静音：/panel/x 会被框架降级为 debug', levelOf('/panel/x') === 'debug', levelOf('/panel/x'), 'debug')
+  check('静音：未挂载的路径仍是 mark（不误伤）', levelOf('/yunzai-own') === 'mark', levelOf('/yunzai-own'), 'mark')
+
+  // 别人（别的插件）自己 push 的路径不能被我们顺手删掉
+  quiet.push('/other-plugin')
+  writeCfg({
+    routes: [{ enable: true, name: '新面板', matchPath: '/panel', host: '127.0.0.1', port: 8765, prefix: '/' }],
+    autoReload: false,
+    statusPage: true,
+    quietProxyLog: true,
+  })
+  plugin.reloadConfig(true)
+  check('静音：不误删别的插件加的路径', quiet.includes('/other-plugin'), quiet, 'contains /other-plugin')
+
+  // 关掉开关：我们加的全部清掉，别人的留着
+  writeCfg({
+    routes: [{ enable: true, name: '新面板', matchPath: '/panel', host: '127.0.0.1', port: 8765, prefix: '/' }],
+    autoReload: false,
+    statusPage: true,
+    quietProxyLog: false,
+  })
+  plugin.reloadConfig(true)
+  check('静音：关掉开关后不残留我们的路径', !quiet.includes('/panel'), quiet, 'not contains /panel')
+  check('静音：关掉开关也不影响别人的路径', quiet.includes('/other-plugin'), quiet, 'contains /other-plugin')
+  check('静音：关掉开关后状态页路径也撤掉', !quiet.includes('/__web-mount__'), quiet, 'not contains /__web-mount__')
+
+  // '/' 兜底路由绝不能加进去，否则整站日志全静音
+  writeCfg({
+    routes: [{ enable: true, name: '兜底', matchPath: '/', host: '127.0.0.1', port: 3132, prefix: '/' }],
+    autoReload: false,
+    statusPage: false,
+    quietProxyLog: true,
+  })
+  plugin.reloadConfig(true)
+  check("静音：'/' 兜底路由不会被静音（否则整站日志全没了）", !quiet.includes('/'), quiet, 'not contains /')
 }
 
 /* ---------- 收尾 ---------- */
