@@ -78,6 +78,18 @@ export function supportGuoba() {
           bottomHelpMessage: '是否允许在状态页/面板页面里直接改路由（锅巴面板始终可改）',
         },
         {
+          field: 'refererSameOriginOnly',
+          label: '来源仅限同源',
+          component: 'Switch',
+          bottomHelpMessage: '开启时（推荐）只有 Referer/Origin 与本机 Host 一致才参与来源分流。Referer 可被任意网站伪造，关掉后陌生网页也能把请求打到你的后端',
+        },
+        {
+          field: 'trailingSlashRedirect',
+          label: '补尾斜杠跳转',
+          component: 'Switch',
+          bottomHelpMessage: '访问 /memes 时 302 到 /memes/，让页面里的 ./x.js 相对资源解析正确。某些 SPA 对多次跳转敏感可关掉',
+        },
+        {
           field: 'debug',
           label: '调试日志',
           component: 'Switch',
@@ -156,7 +168,7 @@ export function supportGuoba() {
         },
       ],
       getConfigData() {
-        const cfg = readConfigFile(baseDir) || {}
+        const cfg = readConfigFile(baseDir, logger) || {}
         const s = readSettings(cfg)
         return {
           autoReload: s.autoReload,
@@ -164,6 +176,8 @@ export function supportGuoba() {
           statusToken: s.statusToken,
           allowEmbed: s.allowEmbed,
           configEditor: s.configEditor,
+          refererSameOriginOnly: s.refererSameOriginOnly,
+          trailingSlashRedirect: s.trailingSlashRedirect,
           debug: s.debug,
           proxyTimeout: s.proxyTimeout,
           routes: (Array.isArray(cfg.routes) ? cfg.routes : []).map(r => ({
@@ -176,6 +190,8 @@ export function supportGuoba() {
         const routes = (data.routes || [])
           .filter(r => r && (r.matchPath || r.port))
           .map(normalizeRoute)
+          // 内部标记不落盘
+          .map(({ __invalidPort, ...rest }) => rest)
 
         const timeout = Number(data.proxyTimeout)
         writeConfigFile(baseDir, {
@@ -184,6 +200,10 @@ export function supportGuoba() {
           statusToken: typeof data.statusToken === 'string' ? data.statusToken.trim() : '',
           allowEmbed: data.allowEmbed === undefined ? DEFAULT_SETTINGS.allowEmbed : !!data.allowEmbed,
           configEditor: data.configEditor === undefined ? DEFAULT_SETTINGS.configEditor : !!data.configEditor,
+          refererSameOriginOnly: data.refererSameOriginOnly === undefined
+            ? DEFAULT_SETTINGS.refererSameOriginOnly : !!data.refererSameOriginOnly,
+          trailingSlashRedirect: data.trailingSlashRedirect === undefined
+            ? DEFAULT_SETTINGS.trailingSlashRedirect : !!data.trailingSlashRedirect,
           debug: !!data.debug,
           proxyTimeout: Number.isFinite(timeout) && timeout >= 1000 ? Math.min(timeout, 600000) : DEFAULT_SETTINGS.proxyTimeout,
           routes,

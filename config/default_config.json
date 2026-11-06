@@ -128,5 +128,7 @@
       "prefix": "/",
       "ws": false
     }
-  ]
+  ],
+  "refererSameOriginOnly": true,
+  "trailingSlashRedirect": true
 }

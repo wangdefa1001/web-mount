@@ -381,6 +381,8 @@
     $('cfg-statusPage').checked = !!d.statusPage;
     $('cfg-allowEmbed').checked = d.allowEmbed !== false;
     $('cfg-configEditor').checked = d.configEditor !== false;
+    $('cfg-refererSameOriginOnly').checked = d.refererSameOriginOnly !== false;
+    $('cfg-trailingSlashRedirect').checked = d.trailingSlashRedirect !== false;
     $('cfg-proxyTimeout').value = d.proxyTimeout || 30000;
     $('cfg-statusToken').value = d.statusToken || '';
 
@@ -429,6 +431,8 @@
       statusPage: $('cfg-statusPage').checked,
       allowEmbed: $('cfg-allowEmbed').checked,
       configEditor: $('cfg-configEditor').checked,
+      refererSameOriginOnly: $('cfg-refererSameOriginOnly').checked,
+      trailingSlashRedirect: $('cfg-trailingSlashRedirect').checked,
       proxyTimeout: Number($('cfg-proxyTimeout').value) || 30000,
       statusToken: $('cfg-statusToken').value,
       routes: routes,

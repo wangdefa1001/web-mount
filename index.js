@@ -66,11 +66,49 @@ function hasAny(hay, pat) {
   if (!pat) return false
   return String(pat).split(/[|,]/).some(p => p && hay.includes(p.trim()))
 }
+
+/* 来源分流的请求来源。两条原则：
+ *  1. 只取 Referer / Origin 的 pathname —— 拿完整 URL 直接做子串匹配时，
+ *     查询串里的 ?q=/zy 也会命中，属于误匹配。
+ *  2. Referer 由客户端完全掌控，任意站点都能伪造。开启 refererSameOriginOnly 时，
+ *     只有 host 等于本次请求 Host 的来源才参与分流；跨站来源一律走「没有来源限制」
+ *     的兜底路由。这一条直接堵住「陌生网页把 /api 打到自己后端」的口子。
+ */
+function refContext(headers, settings) {
+  const raw = []
+  if (headers.referer) raw.push(headers.referer)
+  if (headers.origin) raw.push(headers.origin)
+  const selfHost = String(headers.host || '').toLowerCase()
+  const sameOriginOnly = settings.refererSameOriginOnly !== false
+  const parts = []
+  for (const u of raw) {
+    let host = ''
+    let pname = u
+    try {
+      const url = new URL(u)
+      host = url.host.toLowerCase()
+      pname = url.pathname
+    } catch {
+      // 相对/畸形值（部分原生客户端会这么发）：没有 host 信息，按原文参与匹配
+      // 但只保留 path 部分之前的字符，避免把查询串当路径
+      pname = u.split('?')[0].split('#')[0]
+    }
+    if (sameOriginOnly && host && selfHost && host !== selfHost) continue
+    parts.push(pname)
+  }
+  return parts.join(' ')
+}
+
 function routeMatches(r, ref, pathname, method) {
   if (subPath(pathname, r.matchPath) === null) return false
   if (r.matchReferer && !hasAny(ref, r.matchReferer)) return false
   if (r.matchMethod && !hasAny(method, r.matchMethod.toUpperCase())) return false
   return true
+}
+
+// HTTP 与 WebSocket 共用同一套匹配逻辑，避免 WS 绕过来源/方法限制
+function findRoute(pathname, ref, method) {
+  return state.routes.find(r => routeMatches(r, ref, pathname, method))
 }
 // 最长路径优先；同长度保持配置顺序(保证 /api 按来源分流的顺序不被破坏)
 function sortRoutes(list) {
@@ -124,9 +162,9 @@ export default class WebMount extends plugin {
       },
       collect: () => collectStatus(),
       reset: () => resetStats(),
-      editor: () => readEditorData(pluginDir),
+      editor: () => readEditorData(pluginDir, logger),
       save: (data) => {
-        saveFromEditor(pluginDir, data)
+        saveFromEditor(pluginDir, data, logger)
         this.reloadConfig(true)
         return state.routes.length
       },
@@ -144,7 +182,7 @@ export default class WebMount extends plugin {
   /* ---------- 配置加载 / 热重载 ---------- */
   reloadConfig(isReload) {
     ensureConfig(pluginDir, logger)
-    const raw = readConfigFile(pluginDir)
+    const raw = readConfigFile(pluginDir, logger)
     if (!raw) logger.error('[web-mount] 读取 config.json 失败（将使用空路由）')
     const cfg = normalizeConfig(raw || {})
 
@@ -152,7 +190,8 @@ export default class WebMount extends plugin {
 
     const all = cfg.routes || []
     state.allRoutes = all
-    // routes：匹配用，最长路径优先
+    // routes：匹配用，最长路径优先。端口非法的条目在这里被排除，
+    // 但 allRoutes 里仍保留（带 __invalidPort 标记），启动日志会点名。
     state.routes = sortRoutes(all.filter(r => r.enable && r.port))
     // displayRoutes：展示用，保持配置里的原始顺序
     state.displayRoutes = all.filter(r => r.enable && r.port)
@@ -214,14 +253,15 @@ export default class WebMount extends plugin {
       Bot.server.prependListener('upgrade', (req, socket, head) => {
         if (!state.wsRoutes.length) return
         const pathname = pathnameOf(req.url || '')
-        for (const r of state.wsRoutes) {
-          const sub = subPath(pathname, r.matchPath)
-          if (sub === null) continue
-          const targetPath = joinPath(r.prefix, sub) + queryOf(req.url || '')
-          statOf(r).count++
-          this.forwardWs(req, socket, head, targetPath, r)
-          return
-        }
+        // 只在这个子集里匹配 WS 路由（wsRoutes 已按最长路径优先排好）
+        const ref = refContext(req.headers, state.settings)
+        const route = state.wsRoutes.find(r => routeMatches(r, ref, pathname, 'GET'))
+        if (!route) return
+        const sub = subPath(pathname, route.matchPath)
+        const targetPath = joinPath(route.prefix, sub) + queryOf(req.url || '')
+        statOf(route).count++
+        touchTraffic()
+        this.forwardWs(req, socket, head, targetPath, route)
       })
     } catch (e) {
       state.wsRegistered = false
@@ -249,14 +289,17 @@ export default class WebMount extends plugin {
 
     if (!state.routes.length) return next()
 
-    const ref = (req.headers.referer || '') + ' ' + (req.headers.origin || '')
+    const ref = refContext(req.headers, cfg)
     const method = (req.method || 'GET').toUpperCase()
 
-    const route = state.routes.find(r => routeMatches(r, ref, pathname, method))
+    const route = findRoute(pathname, ref, method)
     if (!route) return next()
 
-    // 精确命中且无尾斜杠的 GET：补一个 /，否则页面里的相对资源(./x.js)会解析错
-    if (!route.matchReferer && !route.matchMethod && (method === 'GET' || method === 'HEAD') &&
+    // 精确命中且无尾斜杠的 GET：补一个 /，否则页面里的相对资源(./x.js)会解析错。
+    // 只对「没有来源/方法限制」的路由做（那条路由就是页面根），避免把分流请求也跳走。
+    // 某些 SPA 对多一次跳转敏感，可用 trailingSlashRedirect: false 关掉。
+    if (cfg.trailingSlashRedirect !== false &&
+        !route.matchReferer && !route.matchMethod && (method === 'GET' || method === 'HEAD') &&
         route.matchPath !== '/' && pathname === route.matchPath) {
       res.writeHead(302, { location: route.matchPath + '/' + queryOf(url) })
       return res.end()
@@ -367,9 +410,16 @@ export default class WebMount extends plugin {
     req.on('aborted', () => { try { proxyReq.destroy() } catch { /* ignore */ } })
 
     if (bodyData) {
+      // body-parser 已经读完的请求：用序列化后的 body 重发
       proxyReq.write(bodyData)
       proxyReq.end()
+    } else if (!hadBody) {
+      // 明确没有请求体（GET 或 content-length: 0）的请求。
+      // 之前这里走 req.pipe()，而空流可能早已 end，pipe 不会再触发 end，
+      // 后端就一直等 —— 表现为「这个请求要卡 30 秒才返回」。必须显式 end()。
+      proxyReq.end()
     } else {
+      // 有请求体且尚未被消费：保持流式转发，大文件上传不占内存
       req.pipe(proxyReq)
     }
   }
@@ -568,7 +618,7 @@ export default class WebMount extends plugin {
         return this.sendJson(res, 403, { ok: false, message: '配置编辑已在设置中关闭' })
       }
       if (req.method === 'GET') {
-        return this.sendJson(res, 200, { ok: true, result: readEditorData(pluginDir) })
+        return this.sendJson(res, 200, { ok: true, result: readEditorData(pluginDir, logger) })
       }
       if (req.method === 'POST') {
         // 未设口令时状态页本身就是公开的，不能让任何人改配置
@@ -581,7 +631,7 @@ export default class WebMount extends plugin {
         const body = await this.readJsonBody(req)
         if (!body) return this.sendJson(res, 400, { ok: false, message: '请求体不是合法 JSON' })
         try {
-          saveFromEditor(pluginDir, body)
+          saveFromEditor(pluginDir, body, logger)
           this.reloadConfig(true)
           return this.sendJson(res, 200, { ok: true, message: `已保存并生效，共 ${state.routes.length} 条路由` })
         } catch (e) {
@@ -756,7 +806,6 @@ export default class WebMount extends plugin {
   printRoutes() {
     const routes = (state.displayRoutes && state.displayRoutes.length) ? state.displayRoutes : state.routes
     const skipped = state.allRoutes.filter(r => r.enable && !r.port)
-
     for (const r of routes) {
       const src = r.matchReferer ? `(来源 ${r.matchReferer})` : ''
       const mtd = r.matchMethod ? `(仅 ${r.matchMethod})` : ''
@@ -774,8 +823,8 @@ export default class WebMount extends plugin {
     }
 
     if (skipped.length) {
-      logger.warn(`[web-mount] 以下 ${skipped.length} 条因端口无效被跳过: ` +
-        skipped.map(r => `${r.matchPath}(port=${r.port})`).join(' ; '))
+      logger.warn(`[web-mount] 以下 ${skipped.length} 条因端口无效被跳过（不会转发，请检查端口）: ` +
+        skipped.map(r => `${r.name || r.matchPath}(port=${r.__invalidPort || r.port || '空'})`).join(' ; '))
     }
     if (state.settings.statusPage) {
       const tk = state.settings.statusToken

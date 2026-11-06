@@ -1,0 +1,325 @@
+/**
+ * web-mount 端到端自检：真实启动插件，用真实 HTTP 请求验证行为。
+ * 用法： node test/e2e.mjs
+ * 退出码 0 = 全部通过。会自动在临时目录搭一个最小 Yunzai 结构，跑完即清理。
+ */
+import http from 'node:http'
+import fs from 'node:fs'
+import path from 'node:path'
+
+import { makeSandbox, loggerStub, makeChecker } from './sandbox.mjs'
+
+const { root: SANDBOX, plugin: PLUGIN } = makeSandbox()
+const PORT = 12536
+const BACKENDS = {}
+
+loggerStub()
+
+const check = makeChecker()
+
+/* ---------- 后端桩：每个端口一个，回显收到的东西 ---------- */
+function backend(port, tag) {
+  return new Promise(resolve => {
+    const srv = http.createServer((req, res) => {
+      const chunks = []
+      req.on('data', c => chunks.push(c))
+      req.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8')
+        res.writeHead(200, {
+          'content-type': 'application/json',
+          'x-frame-options': 'DENY',
+          'content-security-policy': "default-src 'self'; frame-ancestors 'none'",
+        })
+        res.end(JSON.stringify({ tag, method: req.method, url: req.url, host: req.headers.host, body }))
+      })
+    })
+    srv.listen(port, '127.0.0.1', () => { BACKENDS[tag] = srv; resolve() })
+  })
+}
+
+/* ---------- 前置：写测试配置 ---------- */
+const CFG_DIR = path.join(PLUGIN, 'config')
+const CFG_FILE = path.join(CFG_DIR, 'config.json')
+let cfgBackup = null
+if (fs.existsSync(CFG_FILE)) cfgBackup = fs.readFileSync(CFG_FILE)
+
+function writeCfg(obj) {
+  fs.mkdirSync(CFG_DIR, { recursive: true })
+  fs.writeFileSync(CFG_FILE, JSON.stringify(obj, null, 2))
+}
+
+/* ---------- 启动被测插件 ---------- */
+const express = { stack: [], use(fn) { this.stack.push(fn) } }
+const server = http.createServer((req, res) => {
+  const next = () => { res.writeHead(418); res.end('passed-to-yunzai') }
+  let i = 0
+  const step = () => {
+    const fn = express.stack[i++]
+    if (!fn) return next()
+    fn(req, res, step)
+  }
+  step()
+})
+globalThis.Bot = { express, server, logger: globalThis.logger }
+
+const mod = await import(path.join(PLUGIN, 'index.js') + '?t=' + Date.now())
+const plugin = new mod.default()
+await plugin.init()
+
+await new Promise(r => server.listen(PORT, '127.0.0.1', r))
+
+/* ---------- 请求工具 ---------- */
+function req(url, { method = 'GET', headers = {}, body, followRedirect = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url, `http://127.0.0.1:${PORT}`)
+    const r = http.request({ host: u.hostname, port: u.port, path: u.pathname + u.search, method, headers }, res => {
+      const chunks = []
+      res.on('data', c => chunks.push(c))
+      res.on('end', () => {
+        const txt = Buffer.concat(chunks).toString('utf8')
+        let json = null
+        try { json = JSON.parse(txt) } catch { /* 非 JSON */ }
+        resolve({ status: res.statusCode, headers: res.headers, text: txt, json })
+      })
+    })
+    r.on('error', reject)
+    if (body !== undefined) r.write(body)
+    r.end()
+  })
+}
+
+/* ================= 用例 ================= */
+
+// 基线配置：贴近用户真实拓扑
+const userRoutes = [
+  { enable: true, name: 'meme预览站', matchPath: '/memes', host: '127.0.0.1', port: 3132, prefix: '/memes' },
+  { enable: true, name: 'GsCore面板', matchPath: '/zy', host: '127.0.0.1', port: 8765, prefix: '/app' },
+  { enable: true, name: 'GsCore资源', matchPath: '/app', host: '127.0.0.1', port: 8765, prefix: '/app' },
+  { enable: true, name: 'NapCat WebUI', matchPath: '/webui', host: '127.0.0.1', port: 6099, prefix: '/webui', ws: true },
+  { enable: true, name: 'NapCat文件', matchPath: '/files', host: '127.0.0.1', port: 6099, prefix: '/files' },
+  { enable: true, name: 'NapCat入口', matchPath: '/ncqq', host: '127.0.0.1', port: 6099, prefix: '/' },
+  { enable: true, name: 'GsCore API', matchPath: '/api', matchReferer: '/zy|/app|/daily-analyisis-gscore', host: '127.0.0.1', port: 8765, prefix: '/api' },
+  { enable: true, name: 'NapCat API', matchPath: '/api', matchReferer: '/webui|/ncqq', host: '127.0.0.1', port: 6099, prefix: '/api' },
+  { enable: true, name: '青龙', matchPath: '/qinglong', host: '127.0.0.1', port: 5700, prefix: '/' },
+  { enable: true, name: 'daily', matchPath: '/daily-analyisis-gscore', host: '127.0.0.1', port: 8765, prefix: '/daily-analyisis-gscore', entry: true },
+  { enable: true, name: 'agents', matchPath: '/agents', host: '127.0.0.1', port: 6098, prefix: '/' },
+  { enable: true, name: 'agents API', matchPath: '/api', matchReferer: '/agents', host: '127.0.0.1', port: 6098, prefix: '/api' },
+]
+
+await Promise.all([
+  backend(3132, 'memes'), backend(8765, 'gscore'), backend(6099, 'napcat'),
+  backend(5700, 'qinglong'), backend(6098, 'agents'),
+])
+
+writeCfg({ routes: userRoutes, autoReload: false, statusPage: true, statusToken: '', debug: false, allowEmbed: true, configEditor: true })
+plugin.reloadConfig(true)
+
+// 1. 最长路径优先：/memes 不被 / 抢走
+{
+  const r = await req('/memes/a.png')
+  check('最长路径优先 /memes/a.png -> memes', r.json?.tag === 'memes' && r.json?.url === '/memes/a.png', r.json, { tag: 'memes', url: '/memes/a.png' })
+}
+
+// 2. prefix 别名：/zy/x -> /app/x
+{
+  const r = await req('/zy/dashboard')
+  check('别名 /zy/dashboard -> /app/dashboard', r.json?.tag === 'gscore' && r.json?.url === '/app/dashboard', r.json, { tag: 'gscore', url: '/app/dashboard' })
+}
+
+// 3. 剥离前缀：/ncqq/abc -> /abc
+{
+  const r = await req('/ncqq/abc')
+  check('剥离前缀 /ncqq/abc -> /abc', r.json?.tag === 'napcat' && r.json?.url === '/abc', r.json, { tag: 'napcat', url: '/abc' })
+}
+
+// 4. 按来源分流 /api
+{
+  const a = await req('/api/env', { headers: { referer: `http://127.0.0.1:${PORT}/webui/index.html` } })
+  const b = await req('/api/env', { headers: { referer: `http://127.0.0.1:${PORT}/zy/x` } })
+  const c = await req('/api/env', { headers: { referer: `http://127.0.0.1:${PORT}/agents/x` } })
+  check('来源分流 /api by /webui -> napcat', a.json?.tag === 'napcat', a.json, 'napcat')
+  check('来源分流 /api by /zy -> gscore', b.json?.tag === 'gscore', b.json, 'gscore')
+  check('来源分流 /api by /agents -> agents', c.json?.tag === 'agents', c.json, 'agents')
+}
+
+// 5. 【P0-2】跨站伪造 Referer 不应命中受来源限制的路由
+{
+  const r = await req('/api/env', { headers: { referer: 'http://evil.example.com/zy' } })
+  check('跨站 Referer http://evil.example.com/zy 不得命中 gscore', r.json?.tag !== 'gscore', r.json?.tag, '不转发（418）或兜底')
+}
+
+// 6. 未匹配路径放行给 Yunzai
+{
+  const r = await req('/yunzai-own-route')
+  check('未匹配路径放行给 Yunzai', r.status === 418 && r.text === 'passed-to-yunzai', { s: r.status, t: r.text }, { s: 418 })
+}
+
+// 7. 【P1】POST 空 body 不应挂死
+{
+  const t0 = Date.now()
+  const r = await req('/memes/post', { method: 'POST', headers: { 'content-length': '0' }, body: '' })
+  const ms = Date.now() - t0
+  check('POST content-length:0 立即返回（不挂到超时）', r.status === 200 && ms < 3000, { s: r.status, ms }, { s: 200, ms: '<3000' })
+}
+
+// 8. POST 带 JSON body 不丢
+{
+  const payload = JSON.stringify({ hello: '世界', n: 42 })
+  const r = await req('/memes/api', { method: 'POST', headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }, body: payload })
+  check('POST JSON body 完整转发', r.json?.body === payload, r.json?.body, payload)
+}
+
+// 9. 嵌入头剥离
+{
+  const r = await req('/zy/x')
+  check('allowEmbed 剥掉 X-Frame-Options', !r.headers['x-frame-options'], r.headers['x-frame-options'], undefined)
+  check('allowEmbed 去掉 CSP frame-ancestors', !/frame-ancestors/.test(r.headers['content-security-policy'] || ''), r.headers['content-security-policy'], '无 frame-ancestors')
+  check('allowEmbed 保留 CSP 其余指令', /default-src/.test(r.headers['content-security-policy'] || ''), r.headers['content-security-policy'], "含 default-src 'self'")
+}
+
+// 10. 精确命中补斜杠
+{
+  const r = await req('/memes')
+  check('GET /memes -> 302 /memes/', r.status === 302 && r.headers.location === '/memes/', { s: r.status, loc: r.headers.location }, { s: 302, loc: '/memes/' })
+  const r2 = await req('/memes?a=1')
+  check('GET /memes?a=1 -> 302 /memes/?a=1', r2.headers.location === '/memes/?a=1', r2.headers.location, '/memes/?a=1')
+}
+
+// 11. 【P0-1】入口卡片聚合
+{
+  const st = await (await req('/__web-mount__?format=json')).json
+  const names = (st.services || []).map(s => s.name).sort()
+  const expect = ['GsCore面板', 'NapCat WebUI', 'agents', 'daily', 'meme预览站', '青龙'].sort()
+  check('入口卡片包含 NapCat WebUI（同端口多页面不丢）', names.includes('NapCat WebUI'), names, expect)
+  check('入口卡片不含纯接口路径', !names.some(n => /API|文件|资源/.test(n)), names, '无 API/文件/资源')
+}
+
+// 12. 同端口多个 prefix=/ 的取舍：保守策略——只出一张（指向后端根），
+//     目的是防止「一个服务被拆成好几条 /xxx + prefix=/ 的路由」时冒出多张重复卡片。
+//     注意：这样的配置本身有歧义（全是后端根，无法区分是同一页面还是不同页面），
+//     正确写法是给每个页面填它真实的目标前缀。
+{
+  writeCfg({
+    routes: [
+      { enable: true, name: '页A', matchPath: '/pa', host: '127.0.0.1', port: 3132, prefix: '/' },
+      { enable: true, name: '页B', matchPath: '/pb', host: '127.0.0.1', port: 3132, prefix: '/' },
+    ],
+    autoReload: false, statusPage: true, statusToken: '', allowEmbed: true, configEditor: true,
+  })
+  plugin.reloadConfig(true)
+  const st = await (await req('/__web-mount__?format=json')).json
+  const names = st.services.map(s => s.name)
+  check('同端口多个 prefix=/ 只出一张（避免重复卡片）', names.length === 1, names, ['页A'])
+}
+
+// 12b. 同端口多个 prefix=/ 但都标了 entry=显示 → 尊重用户，各出一张
+{
+  writeCfg({
+    routes: [
+      { enable: true, name: '页A', matchPath: '/pa', host: '127.0.0.1', port: 3132, prefix: '/', entry: true },
+      { enable: true, name: '页B', matchPath: '/pb', host: '127.0.0.1', port: 3132, prefix: '/', entry: true },
+    ],
+    autoReload: false, statusPage: true, statusToken: '', allowEmbed: true, configEditor: true,
+  })
+  plugin.reloadConfig(true)
+  const st = await (await req('/__web-mount__?format=json')).json
+  const names = st.services.map(s => s.name).sort()
+  check('两条都标「显示」时各出一张', names.join(',') === '页A,页B', names, ['页A', '页B'])
+}
+
+// 13. 【P0-4】端口非法的路由不应静默消失（应保留并被禁用）
+{
+  writeCfg({
+    routes: [
+      { enable: true, name: '好路由', matchPath: '/ok', host: '127.0.0.1', port: 3132, prefix: '/' },
+      { enable: true, name: '端口写错', matchPath: '/bad', host: '127.0.0.1', port: 0, prefix: '/' },
+    ],
+    autoReload: false, statusPage: true, statusToken: '', allowEmbed: true, configEditor: true,
+  })
+  const cfgMod = await import(path.join(PLUGIN, 'lib/config.js'))
+  const raw = JSON.parse(fs.readFileSync(CFG_FILE, 'utf8'))
+  const norm = cfgMod.normalizeConfig(raw)
+  check('normalizeConfig 保留端口非法的路由（供日志提示）', norm.routes.length === 2, norm.routes.length, 2)
+  plugin.reloadConfig(true)
+  const r = await req('/bad/x')
+  check('端口非法的路由不生效（放行给 Yunzai）', r.status === 418, r.status, 418)
+}
+
+// 14. 【P1-1】config.json 写入是原子的：写入过程中读不到半截文件
+{
+  const cfgMod = await import(path.join(PLUGIN, 'lib/config.js'))
+  const big = { routes: userRoutes, pad: 'x'.repeat(200000) }
+  let broken = 0
+  for (let i = 0; i < 30; i++) {
+    cfgMod.writeConfigFile(PLUGIN, big)
+    const txt = fs.readFileSync(CFG_FILE, 'utf8')
+    try { JSON.parse(txt) } catch { broken++ }
+  }
+  check('writeConfigFile 结果始终可被 JSON.parse', broken === 0, broken, 0)
+  check('writeConfigFile 不残留临时文件', !fs.readdirSync(CFG_DIR).some(f => f.endsWith('.tmp')), fs.readdirSync(CFG_DIR), '无 .tmp')
+}
+
+// 15. 【P0-3】旧格式迁移保留规则自带的 matchPath
+{
+  const cfgMod = await import(path.join(PLUGIN, 'lib/config.js'))
+  const migrated = cfgMod.normalizeConfig({
+    mounts: [{ enable: true, note: '老挂载', path: '/old', host: '127.0.0.1', port: 3132, prefix: '/' }],
+    dispatch: { enable: true, path: '/api', rules: [
+      { enable: true, name: '自带路径', matchPath: '/login', host: '127.0.0.1', port: 3132, prefix: '/' },
+      { enable: true, name: '无路径', host: '127.0.0.1', port: 3132, prefix: '/' },
+    ] },
+  })
+  const paths = migrated.routes.map(r => r.matchPath)
+  check('旧格式迁移：自带 matchPath 的规则不被改成 /api', paths.includes('/login'), paths, '含 /login')
+  check('旧格式迁移：无 matchPath 的规则落到 dispatch.path', paths.filter(p => p === '/api').length === 1, paths, '一条 /api')
+}
+
+// 16. 【P1-4】WS upgrade 也受来源限制
+{
+  writeCfg({
+    routes: [
+      { enable: true, name: 'wsA', matchPath: '/ws', matchReferer: '/zy', host: '127.0.0.1', port: 6099, prefix: '/ws', ws: true },
+      { enable: true, name: 'wsB', matchPath: '/ws', host: '127.0.0.1', port: 3132, prefix: '/ws', ws: true },
+    ],
+    autoReload: false, statusPage: true, statusToken: '', allowEmbed: true, configEditor: true,
+  })
+  plugin.reloadConfig(true)
+  // 用一个 TCP 假 upgrade 请求，看插件把连接转到哪
+  const net = await import('node:net')
+  const hits = []
+  // BACKENDS 用的是 listen(PORT, '127.0.0.1')，这里要先关掉复用同一端口
+  for (const [tag, s] of Object.entries(BACKENDS)) { await new Promise(r => s.close(r)); delete BACKENDS[tag] }
+  const srvA = http.createServer()
+  srvA.on('upgrade', (rq, sock) => { hits.push('A'); sock.destroy() })
+  const srvB = http.createServer()
+  srvB.on('upgrade', (rq, sock) => { hits.push('B'); sock.destroy() })
+  await new Promise(r => srvA.listen(6099, '127.0.0.1', r))
+  await new Promise(r => srvB.listen(3132, '127.0.0.1', r))
+  const tryWs = (referer) => new Promise(resolve => {
+    const s = net.connect(PORT, '127.0.0.1', () => {
+      s.write(`GET /ws/live HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n` + (referer ? `Referer: ${referer}\r\n` : '') + '\r\n')
+    })
+    s.on('data', () => {})
+    s.on('close', resolve)
+    s.on('error', resolve)
+    setTimeout(() => { s.destroy(); resolve() }, 1500)
+  })
+  await tryWs(`http://127.0.0.1:${PORT}/zy`)
+  await tryWs(`http://evil.example.com/zy`)
+  await tryWs('')
+  check('WS 带 /zy 来源 -> 后端A(6099)', hits[0] === 'A', hits, ['A', 'B', 'B'])
+  check('WS 跨站来源 -> 兜底后端B(3132) 而非 A', hits[1] === 'B', hits, ['A', 'B', 'B'])
+  check('WS 无来源 -> 兜底后端B(3132)', hits[2] === 'B', hits, ['A', 'B', 'B'])
+  srvA.close(); srvB.close()
+}
+
+/* ---------- 收尾 ---------- */
+server.close()
+for (const s of Object.values(BACKENDS)) try { s.close() } catch { /* ignore */ }
+
+if (cfgBackup) fs.writeFileSync(CFG_FILE, cfgBackup)
+else if (fs.existsSync(CFG_FILE)) fs.unlinkSync(CFG_FILE)
+
+fs.rmSync(SANDBOX, { recursive: true, force: true })
+const failed = check.summary('端到端 ')
+process.exit(failed ? 1 : 0)

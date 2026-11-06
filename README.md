@@ -13,6 +13,18 @@
 
 ---
 
+## 🆕 v1.5.3 变更
+
+- **修**:服务入口在「剥离前缀」(`prefix: "/"`)场景下会丢卡片 —— 同端口上 `/ncqq` 会把 `/webui` 顶掉。
+- **修**:`matchReferer` 由「任意站点的子串匹配」改为「同源 + pathname 匹配」,堵住跨站伪造 Referer 打后端的路子(新增 `refererSameOriginOnly`)。
+- **修**:旧格式迁移会丢掉规则自带的 `matchPath`;端口写错的路由被静默丢弃且警告日志永不触发。
+- **修**:无请求体的 POST 会挂在转发超时;`config.json` 改为原子写,坏文件自动备份。
+- **修**:WebSocket `upgrade` 绕过来源/方法限制,`/ws` 的分流「谁在前谁赢」。
+- **改**:状态探测按 `host:port` 去重;新增 `trailingSlashRedirect` 开关。
+- **加**:`node test/run-all.mjs` 自检(28 项端到端 + 归一化/兼容/原子写/并发)。
+
+---
+
 ## 📖 这是什么
 
 `web-mount` 是一个 **Yunzai v3** 插件。它把运行在本机的其它端口服务(如三方面板、静态站、WebSocket 服务)通过 `Bot.express` 中间件 + `Bot.server` 的 `upgrade` 事件,**反向代理挂载到 Yunzai HTTP 端口下的任意路径**,并在锅巴面板里可视化配置。
@@ -69,8 +81,10 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 | `ws`            | 该服务是否需要 WebSocket 转发                           |
 | `entry` | 是否作为「服务入口」的页面入口:显示 / 隐藏 / 留空=自动 |
 
-> **命中规则**:`matchPath` 必须匹配;`matchReferer` / `matchMethod` 留空则不限制,填了就要同时满足。  
-> **优先级**:路径**越长越优先**(`/memes` 先于 `/`);**同长度时按配置顺序**,首条命中即转发。所以 `/api` 的多条分流规则,把更精确的放前面即可。
+`matchPath` 必须匹配;`matchReferer` / `matchMethod` 留空则不限制,填了就要同时满足。  
+**优先级**:路径**越长越优先**(`/memes` 先于 `/`);**同长度时按配置顺序**,首条命中即转发。所以 `/api` 的多条分流规则,把更精确的放前面即可。
+
+> **`matchReferer` 只比对 pathname,且默认只认同源来源。** `Referer` 是客户端完全可控的请求头,任意网页都能伪造。默认(`refererSameOriginOnly: true`)只有 Referer/Origin 的 host 与本次请求的 Host 一致时才参与分流,跨站来源一律落到「没有来源限制」的兜底路由。这挡住了「陌生网页把你的 `/api` 打到 GsCore/NapCat」的路子。
 
 ### 全局设置
 
@@ -83,6 +97,8 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 | `proxyTimeout` | `30000` | 转发超时(毫秒),后端卡死时自动断开                                                 |
 | `allowEmbed` | `true` | 允许把挂载的页面嵌进面板/状态页(会剥掉后端的 `X-Frame-Options`) |
 | `configEditor` | `true` | 是否允许在页面里改配置;关掉后抽屉只读 |
+| `refererSameOriginOnly` | `true` | 来源分流只认同源 Referer/Origin。**Referer 可被任意站点伪造**,关掉后陌生网页也能把 `/api` 打到你的后端 |
+| `trailingSlashRedirect` | `true` | 访问 `/memes` 时 302 到 `/memes/`,让页面里的 `./x.js` 相对资源解析正确。某些 SPA 对多次跳转敏感可关掉 |
 
 ---
 
@@ -240,15 +256,21 @@ GET  /__web-mount__/logout            # 退出登录
 
 ```
 plugins/web-mount/
-├── index.js            # 主入口:反向代理 + 独立状态页
+├── index.js            # 主入口:反向代理 + WebSocket + 独立状态页
+├── guoba.support.js    # 锅巴「插件配置」表单(左侧菜单里的那套)
 ├── guoba/              # 锅巴扩展页面(本仓库自带)
 │   ├── index.js        #   init(ctx) 注册页面与接口
 │   ├── dashboard.html
 │   ├── dashboard.css
 │   └── dashboard.js
 ├── lib/
+│   ├── config.js       # config.json 的唯一读写入口(归一化/迁移/原子写)
 │   └── status.js       # 运行状态与统计(两个页面共用)
-└── config/
+├── config/
+│   ├── default_config.json   # 默认模板(入库)
+│   └── config.json           # 实际配置(本地,已 gitignore)
+├── scripts/            # 发布/初始化辅助脚本
+└── test/               # 自检脚本(node test/run-all.mjs)
 ```
 
 > 只在面板里看的话,可以把「状态页」开关关掉(`statusPage: false`),少一个对外入口,照样能在锅巴里查看。
@@ -287,17 +309,22 @@ plugins/web-mount/
 
 自动补的规则:
 
-1. 先按「目标内前缀」去重 —— `/zy`(`prefix=/app`)与 `/app`(`prefix=/app`)是同一个应用,只留一张卡片;
+1. 先按「页面」去重 —— 目标内前缀相同(`/zy`(prefix `/app`)与 `/app`(prefix `/app`) 是同一个应用)只留一张卡片;
 2. 排除接口/登录类路径:`/api`、`/ws`、`/socket`、`/files`、`/static`、`/assets`、`/login`、`/auth` 等;
 3. 剩下的取 `matchPath` 最短的那条。
 
-同一个 8765 上的例子:
+**关于 `prefix: "/"`(剥离前缀)的路由**:这个值不携带页面信息 —— 青龙、NapCat、agents 全都填 `/`,但它们的页面各不相同。所以:
+
+- 同一端口上,**具名前缀**的页面(如 `/webui` 的 `prefix=/webui`)与 **`prefix=/`** 的页面(如 `/ncqq`)会被正确识别成两个页面,各出一张卡;
+- 同一端口上有多条 `prefix=/` 时,默认只出一张卡(它们都指向后端根,无法区分是同一页面的多个路径还是多个页面)。真想让它们都出现,给每条标「显示」即可。
+
+同一个 6099 上的例子:
 
 | 配置 | 结果 |
 |---|---|
-| `/zy`、`/app`、`/api`,都不标 | 只出 GsCore 面板(`/zy`) |
-| `/daily-analyisis-gscore` 标「显示」 | 出两张:GsCore 面板 + 早柚日报(`/zy` 仍会自动补,不会消失) |
-| 两个都标「显示」 | 同样两张,顺序/命名按你的配置 |
+| `/webui`、`/files`、`/ncqq`(prefix `/`),都不标 | WebUI 与 入口 各一张(`/files` 是接口类路径被排除) |
+| `/webui`、`/ncqq` 都标「显示」 | 同样两张,顺序/命名按你的配置 |
+| 青龙 `/qinglong` + agents `/agents`(不同端口,都是 prefix `/`) | 各一张 |
 
 > 所以像「早柚日报」这种同端口不同页面的服务,**最省事的做法就是给它标一个「显示」**;同端口的面板不会因此被挤掉。
 >
@@ -360,8 +387,27 @@ plugins/web-mount/
 
 ---
 
-## 🩺 常见问题(FAQ)
+## 📱 在 Termux / Android(chroot 容器)上运行
 
+插件本身没有平台相关代码,但在手机上跑有几个实际差异值得知道:
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 编辑配置后整个配置"消失" | 手机上进程随时可能被系统回收,`writeFileSync` 覆盖到一半被杀会留下半截 JSON | **v1.5.3 起已改为原子写**(临时文件 + rename),坏文件会备份成 `config.json.broken` 而不是直接丢掉 |
+| 点某个服务"要转圈很久才出来" | 没有请求体的 POST 之前会挂在 `proxyTimeout`(默认 30 秒) | v1.5.3 起无 body 的请求立即 `end()` |
+| 状态页刷新时手机发热/耗电 | 每条路由各建一次 TCP 探测 | v1.5.3 起按 `host:port` 去重探测 |
+| 后端全填 `127.0.0.1` 但连不上 | 容器(chroot/arch)与宿主机 Termux 的 `127.0.0.1` 不是同一个网络命名空间 | 把 `host` 改成宿主机的局域网 IP(如 `192.168.x.x`),或让服务监听 `0.0.0.0` 并用宿主机 IP 访问 |
+
+自检(可选,只会用临时目录,不改你的配置):
+
+```bash
+cd plugins/web-mount
+node test/run-all.mjs     # 或 npm test
+```
+
+---
+
+## 🩺 常见问题(FAQ)
 **Q: 面板挂到子路径后白屏,控制台报 MIME type ('text/html') 不是样式表/脚本?**  
 A: 面板前端默认按**根路径**取资源(`/umi.xxx.js`、`/api/...`),挂到 `/qinglong` 下就不匹配了。**两步**:①给面板设基础路径 —— 青龙用 `QlBaseUrl=/qinglong/`(让前端路由与接口都带该前缀);②插件这条路由用 **`prefix=/` 剥离前缀**,转发到后端根目录。详见「新增一个服务」一节。
 
@@ -370,6 +416,9 @@ A: 说明面板没做子路径适配(或插件前缀配错)。正解:①青龙�
 
 **Q: `/api` 是多个服务共用的,会互相抢吗?**  
 A: 会。给 `/api` 建多条规则,每条用 `matchReferer` 限定来源;顺序即优先级,默认兜底规则放最后。若都不匹配会放行给 Yunzai(可再配一条来源留空的 `/api` 兜底)。
+
+**Q: 配了 `matchReferer`,但陌生网页也能访问我的后端?**  
+A: v1.5.3 之前是子串匹配 —— 任意网页只要带 `Referer: https://x/zy` 就能命中 `/zy` 那条分流。现在默认只认同源来源(`refererSameOriginOnly: true`),且只比对 pathname(不会被 `?q=/zy` 这类查询串误命中)。如果确实需要跨站来源,才把它关掉。
 
 **Q: 访问某个路径返回 `502 Bad Gateway`?**  
 A: 插件连不上目标后端。①打开 `/__web-mount__` 看该路由的指示灯是不是红的;②确认后端端口确实在监听(`ss -tlnp` 里能看到该端口);③若后端在容器或其他设备里,`host` 不能填 `127.0.0.1`。错误信息会带路由名和实际转发的路径,控制台也有一条 `转发失败 ...` 日志(同一路由 10 秒内只记一条)。

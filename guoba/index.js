@@ -44,7 +44,7 @@ export function init(ctx) {
   registerApi('get', '/config', (req, res) => {
     if (!globalThis.__webMountApi) return notReady(res)
     try {
-      res.json({ ok: true, code: 0, result: readEditorData(PLUGIN_DIR), message: 'ok' })
+      res.json({ ok: true, code: 0, result: readEditorData(PLUGIN_DIR, logger), message: 'ok' })
     } catch (e) {
       res.status(500).json({ ok: false, code: 500, result: null, message: '读取配置失败：' + e.message })
     }
@@ -59,7 +59,7 @@ export function init(ctx) {
       return res.status(400).json({ ok: false, code: 400, result: null, message: '请求体不是合法 JSON' })
     }
     try {
-      saveFromEditor(PLUGIN_DIR, body)
+      saveFromEditor(PLUGIN_DIR, body, logger)
       const n = api.reload()
       res.json({ ok: true, code: 0, result: { routes: n }, message: `已保存并生效，共 ${n} 条路由` })
     } catch (e) {

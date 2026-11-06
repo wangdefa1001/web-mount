@@ -1,6 +1,9 @@
 {
   "name": "web-mount",
-  "version": "1.5.2",
+  "version": "1.5.3",
+  "engines": {
+    "node": ">=16.14"
+  },
   "description": "把本机各端口的服务反向代理挂载到 Yunzai HTTP 端口的子路径下，支持按路径/来源/方法智能分发与 WebSocket，自带锅巴面板页面",
   "type": "module",
   "main": "index.js",
@@ -24,5 +27,8 @@
     "lib",
     "config",
     "README.md"
-  ]
+  ],
+  "scripts": {
+    "test": "node test/run-all.mjs"
+  }
 }
