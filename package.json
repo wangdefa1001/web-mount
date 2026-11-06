@@ -1,6 +1,6 @@
 {
   "name": "web-mount",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "engines": {
     "node": ">=16.14"
   },
@@ -29,6 +29,13 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node test/run-all.mjs"
+    "test": "node test/run-all.mjs",
+    "lint": "eslint .",
+    "format": "prettier --write \"index.js\" \"lib/**/*.js\" \"guoba.support.js\" \"guoba/index.js\" \"test/**/*.mjs\" \"eslint.config.js\"",
+    "check": "npm run lint && npm test"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5",
+    "prettier": "^3.9.10"
   }
 }

@@ -1,8 +1,6 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import {
-  DEFAULT_SETTINGS, readConfigFile, writeConfigFile, readSettings, normalizeRoute,
-} from './lib/config.js'
+import { readEditorData, saveFromEditor } from './lib/config.js'
 
 // 用插件自身目录定位配置，避免依赖 process.cwd()
 let baseDir = process.cwd()
@@ -10,13 +8,6 @@ try {
   baseDir = path.dirname(fileURLToPath(import.meta.url))
 } catch {
   baseDir = path.join(process.cwd(), 'plugins/web-mount')
-}
-
-// 锅巴的 Select 用字符串表达三态，转成内部约定
-function entryToView(v) {
-  if (v === true) return 'show'
-  if (v === false) return 'hide'
-  return ''
 }
 
 export function supportGuoba() {
@@ -81,13 +72,15 @@ export function supportGuoba() {
           field: 'refererSameOriginOnly',
           label: '来源仅限同源',
           component: 'Switch',
-          bottomHelpMessage: '开启时（推荐）只有 Referer/Origin 与本机 Host 一致才参与来源分流。Referer 可被任意网站伪造，关掉后陌生网页也能把请求打到你的后端',
+          bottomHelpMessage:
+            '开启时（推荐）只有 Referer/Origin 与本机 Host 一致才参与来源分流。Referer 可被任意网站伪造，关掉后陌生网页也能把请求打到你的后端',
         },
         {
           field: 'trailingSlashRedirect',
           label: '补尾斜杠跳转',
           component: 'Switch',
-          bottomHelpMessage: '访问 /memes 时 302 到 /memes/，让页面里的 ./x.js 相对资源解析正确。某些 SPA 对多次跳转敏感可关掉',
+          bottomHelpMessage:
+            '访问 /memes 时 302 到 /memes/，让页面里的 ./x.js 相对资源解析正确。某些 SPA 对多次跳转敏感可关掉',
         },
         {
           field: 'debug',
@@ -110,7 +103,12 @@ export function supportGuoba() {
             multiple: true,
             schemas: [
               { field: 'enable', label: '启用', component: 'Switch' },
-              { field: 'name', label: '名称', component: 'Input', componentProps: { placeholder: 'meme站 / GsCore / NapCat / 青龙' } },
+              {
+                field: 'name',
+                label: '名称',
+                component: 'Input',
+                componentProps: { placeholder: 'meme站 / GsCore / NapCat / 青龙' },
+              },
               {
                 field: 'matchPath',
                 label: '匹配路径 matchPath',
@@ -133,8 +131,20 @@ export function supportGuoba() {
                 componentProps: { placeholder: 'GET|POST  留空=不限制' },
                 bottomHelpMessage: '只在指定 HTTP 方法时命中，如只让 GET 走这个后端',
               },
-              { field: 'host', label: '目标IP', component: 'Input', required: true, componentProps: { placeholder: '127.0.0.1' } },
-              { field: 'port', label: '目标端口', component: 'InputNumber', required: true, componentProps: { min: 1, max: 65535, placeholder: 3132 } },
+              {
+                field: 'host',
+                label: '目标IP',
+                component: 'Input',
+                required: true,
+                componentProps: { placeholder: '127.0.0.1' },
+              },
+              {
+                field: 'port',
+                label: '目标端口',
+                component: 'InputNumber',
+                required: true,
+                componentProps: { min: 1, max: 65535, placeholder: 3132 },
+              },
               {
                 field: 'prefix',
                 label: '目标内前缀',
@@ -154,7 +164,8 @@ export function supportGuoba() {
                     { label: '不显示', value: 'hide' },
                   ],
                 },
-                bottomHelpMessage: '同一端口上可能挂着多个不同页面（如 GsCore 的 /zy 与它插件页 /daily-analyisis-gscore）。给每个页面各标一条「显示」即可，同端口的面板不会因此消失；留空则自动挑一个。',
+                bottomHelpMessage:
+                  '同一端口上可能挂着多个不同页面（如 GsCore 的 /zy 与它插件页 /daily-analyisis-gscore）。给每个页面各标一条「显示」即可，同端口的面板不会因此消失；留空则自动挑一个。',
               },
               {
                 field: 'ws',
@@ -162,55 +173,28 @@ export function supportGuoba() {
                 component: 'Switch',
                 bottomHelpMessage: '该服务需要 WS（如 NapCat 实时日志）时打开',
               },
+              {
+                field: 'autoApi',
+                label: '自动 /api',
+                component: 'Switch',
+                bottomHelpMessage:
+                  '页面里的前端代码用绝对路径 /api 发请求时，自动生成一条 /api 分流（来源=该页面路径），不用再手工加一条。已手工配过 /api 的后端不受影响',
+              },
             ],
           },
           bottomHelpMessage: '自上而下匹配，命中第一条即转发。matchPath 相同的多条规则靠「来源」区分，更精确的放前面。',
         },
       ],
+      // 字段清单、默认值、entry 三态转换统一由 lib/config.js 提供，
+      // 这里不再重复维护一份（之前两处各写一遍，加字段时漏改就会「保存后丢失」）
       getConfigData() {
-        const cfg = readConfigFile(baseDir, logger) || {}
-        const s = readSettings(cfg)
-        return {
-          autoReload: s.autoReload,
-          statusPage: s.statusPage,
-          statusToken: s.statusToken,
-          allowEmbed: s.allowEmbed,
-          configEditor: s.configEditor,
-          refererSameOriginOnly: s.refererSameOriginOnly,
-          trailingSlashRedirect: s.trailingSlashRedirect,
-          debug: s.debug,
-          proxyTimeout: s.proxyTimeout,
-          routes: (Array.isArray(cfg.routes) ? cfg.routes : []).map(r => ({
-            ...r,
-            entry: entryToView(r.entry),
-          })),
-        }
+        return readEditorData(baseDir, logger, { entryAsView: true })
       },
       setConfigData(data, { Result }) {
-        const routes = (data.routes || [])
-          .filter(r => r && (r.matchPath || r.port))
-          .map(normalizeRoute)
-          // 内部标记不落盘
-          .map(({ __invalidPort, ...rest }) => rest)
-
-        const timeout = Number(data.proxyTimeout)
-        writeConfigFile(baseDir, {
-          autoReload: !!data.autoReload,
-          statusPage: !!data.statusPage,
-          statusToken: typeof data.statusToken === 'string' ? data.statusToken.trim() : '',
-          allowEmbed: data.allowEmbed === undefined ? DEFAULT_SETTINGS.allowEmbed : !!data.allowEmbed,
-          configEditor: data.configEditor === undefined ? DEFAULT_SETTINGS.configEditor : !!data.configEditor,
-          refererSameOriginOnly: data.refererSameOriginOnly === undefined
-            ? DEFAULT_SETTINGS.refererSameOriginOnly : !!data.refererSameOriginOnly,
-          trailingSlashRedirect: data.trailingSlashRedirect === undefined
-            ? DEFAULT_SETTINGS.trailingSlashRedirect : !!data.trailingSlashRedirect,
-          debug: !!data.debug,
-          proxyTimeout: Number.isFinite(timeout) && timeout >= 1000 ? Math.min(timeout, 600000) : DEFAULT_SETTINGS.proxyTimeout,
-          routes,
-        })
-
-        const tip = data.autoReload ? '约 2 秒后自动生效' : '重启 Yunzai 后生效'
-        return Result.ok({}, `已保存 ${routes.length} 条路由，${tip}~`)
+        const saved = saveFromEditor(baseDir, data || {}, logger)
+        const n = (saved.routes || []).filter(r => r.port).length
+        const tip = data && data.autoReload ? '约 2 秒后自动生效' : '重启 Yunzai 后生效'
+        return Result.ok({}, `已保存 ${n} 条路由，${tip}~`)
       },
     },
   }

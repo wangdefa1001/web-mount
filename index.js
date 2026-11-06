@@ -4,12 +4,24 @@ import { fileURLToPath } from 'node:url'
 import plugin from '../../lib/plugins/plugin.js'
 import { state, collectStatus, resetStats, statOf, touchTraffic } from './lib/status.js'
 import {
-  ensureConfig, configPaths, readConfigFile,
-  normalizeConfig, readSettings, saveFromEditor, readEditorData,
+  ensureConfig,
+  configPaths,
+  readConfigFile,
+  normalizeConfig,
+  readSettings,
+  saveFromEditor,
+  readEditorData,
 } from './lib/config.js'
 import {
-  sortRoutes, findRoute, routeMatches,
-  pathnameOf, queryOf, subPath, joinPath, refContext,
+  sortRoutes,
+  findRoute,
+  routeMatches,
+  expandAutoApi,
+  pathnameOf,
+  queryOf,
+  subPath,
+  joinPath,
+  refContext,
 } from './lib/route.js'
 import { forwardHttp, forwardWs } from './lib/proxy.js'
 import { StatusPage, STATUS_PATH, isStatusPath } from './lib/status-page.js'
@@ -30,7 +42,9 @@ import { StatusPage, STATUS_PATH, isStatusPath } from './lib/status-page.js'
 let pluginDir = path.join(process.cwd(), 'plugins/web-mount')
 try {
   pluginDir = path.dirname(fileURLToPath(import.meta.url))
-} catch { /* 非 ESM 环境回退到 cwd */ }
+} catch {
+  /* 非 ESM 环境回退到 cwd */
+}
 const CFG_PATHS = configPaths(pluginDir)
 const configPath = CFG_PATHS.file
 
@@ -58,7 +72,7 @@ export default class WebMount extends plugin {
       collect: () => collectStatus(),
       reset: () => resetStats(),
       editor: () => readEditorData(pluginDir, logger),
-      save: (data) => {
+      save: data => {
         saveFromEditor(pluginDir, data, logger)
         this.reloadConfig(true)
         return state.routes.length
@@ -85,11 +99,14 @@ export default class WebMount extends plugin {
 
     const all = cfg.routes || []
     state.allRoutes = all
+    // enabled：配置里启用且端口有效的条目；derived：由 autoApi 派生的 /api 分流
+    const enabled = all.filter(r => r.enable && r.port)
+    const effective = expandAutoApi(enabled)
     // routes：匹配用，最长路径优先。端口非法的条目在这里被排除，
     // 但 allRoutes 里仍保留（带 __invalidPort 标记），启动日志会点名。
-    state.routes = sortRoutes(all.filter(r => r.enable && r.port))
-    // displayRoutes：展示用，保持配置里的原始顺序
-    state.displayRoutes = all.filter(r => r.enable && r.port)
+    state.routes = sortRoutes(effective)
+    // displayRoutes：展示用，保持配置里的原始顺序（派生路由追加在末尾）
+    state.displayRoutes = effective
     state.wsRoutes = state.routes.filter(r => r.ws)
 
     if (isReload) {
@@ -107,12 +124,20 @@ export default class WebMount extends plugin {
     if (!state.settings.autoReload) return
 
     let lastMtime = 0
-    try { lastMtime = fs.statSync(configPath).mtimeMs } catch { /* ignore */ }
+    try {
+      lastMtime = fs.statSync(configPath).mtimeMs
+    } catch {
+      /* ignore */
+    }
 
     state.timer = setInterval(() => {
       if (!state.settings.autoReload) return
       let m = 0
-      try { m = fs.statSync(configPath).mtimeMs } catch { return }
+      try {
+        m = fs.statSync(configPath).mtimeMs
+      } catch {
+        return
+      }
       if (m && m !== lastMtime) {
         lastMtime = m
         // 稍等写入落盘再读
@@ -191,9 +216,14 @@ export default class WebMount extends plugin {
     // 精确命中且无尾斜杠的 GET：补一个 /，否则页面里的相对资源(./x.js)会解析错。
     // 只对「没有来源/方法限制」的路由做（那条路由就是页面根），避免把分流请求也跳走。
     // 某些 SPA 对多一次跳转敏感，可用 trailingSlashRedirect: false 关掉。
-    if (cfg.trailingSlashRedirect !== false &&
-        !route.matchReferer && !route.matchMethod && (method === 'GET' || method === 'HEAD') &&
-        route.matchPath !== '/' && pathname === route.matchPath) {
+    if (
+      cfg.trailingSlashRedirect !== false
+      && !route.matchReferer
+      && !route.matchMethod
+      && (method === 'GET' || method === 'HEAD')
+      && route.matchPath !== '/'
+      && pathname === route.matchPath
+    ) {
       res.writeHead(302, { location: route.matchPath + '/' + queryOf(url) })
       return res.end()
     }
@@ -205,31 +235,41 @@ export default class WebMount extends plugin {
 
   /* ---------- 启动日志 ---------- */
   printRoutes() {
-    const routes = (state.displayRoutes && state.displayRoutes.length) ? state.displayRoutes : state.routes
+    const routes = state.displayRoutes && state.displayRoutes.length ? state.displayRoutes : state.routes
+    const manual = routes.filter(r => !r.derived)
+    const derived = routes.filter(r => r.derived)
     const skipped = state.allRoutes.filter(r => r.enable && !r.port)
-    for (const r of routes) {
+    for (const r of manual) {
       const src = r.matchReferer ? `(来源 ${r.matchReferer})` : ''
       const mtd = r.matchMethod ? `(仅 ${r.matchMethod})` : ''
       const prefixTxt = r.prefix && r.prefix !== '/' ? r.prefix : ''
       logger.mark(
-        `[web-mount] ${r.matchPath}${src}${mtd} -> ${r.host}:${r.port}${prefixTxt} 已挂载${r.ws ? '(含WS)' : ''}${r.name ? ' [' + r.name + ']' : ''}`
+        `[web-mount] ${r.matchPath}${src}${mtd} -> ${r.host}:${r.port}${prefixTxt} 已挂载${r.ws ? '(含WS)' : ''}${r.name ? ' [' + r.name + ']' : ''}`,
       )
     }
+    for (const r of derived) {
+      logger.mark(`[web-mount] ${r.matchPath}(来源 ${r.matchReferer}) -> ${r.host}:${r.port}${r.prefix} 已自动生成`)
+    }
 
-    if (routes.length) {
-      const list = routes.map(r => r.matchPath + (r.matchReferer ? `<${r.matchReferer}>` : '')).join(' ')
-      logger.mark(`[web-mount] 启动完成，已挂载 ${routes.length} 条: ${list}`)
+    if (manual.length) {
+      const list = manual.map(r => r.matchPath + (r.matchReferer ? `<${r.matchReferer}>` : '')).join(' ')
+      const extra = derived.length ? `（另自动生成 ${derived.length} 条 /api 分流）` : ''
+      logger.mark(`[web-mount] 启动完成，已挂载 ${manual.length} 条${extra}: ${list}`)
     } else {
       logger.warn('[web-mount] 没有可用的路由，请在 config.json 或锅巴面板里添加')
     }
 
     if (skipped.length) {
-      logger.warn(`[web-mount] 以下 ${skipped.length} 条因端口无效被跳过（不会转发，请检查端口）: ` +
-        skipped.map(r => `${r.name || r.matchPath}(port=${r.__invalidPort || r.port || '空'})`).join(' ; '))
+      logger.warn(
+        `[web-mount] 以下 ${skipped.length} 条因端口无效被跳过（不会转发，请检查端口）: `
+          + skipped.map(r => `${r.name || r.matchPath}(port=${r.__invalidPort || r.port || '空'})`).join(' ; '),
+      )
     }
     if (state.settings.statusPage) {
       const tk = state.settings.statusToken
-      logger.mark(`[web-mount] 状态页: ${STATUS_PATH}${tk ? `（已设口令，长度 ${tk.length}）` : '（未设口令，建议公网暴露时设置）'}`)
+      logger.mark(
+        `[web-mount] 状态页: ${STATUS_PATH}${tk ? `（已设口令，长度 ${tk.length}）` : '（未设口令，建议公网暴露时设置）'}`,
+      )
     }
     if (state.settings.autoReload) {
       logger.mark('[web-mount] 已开启配置热重载，修改 config.json 后约 2 秒自动生效')

@@ -10,13 +10,22 @@ const REPO = path.dirname(HERE)
 const PORT = 12537
 globalThis.logger = { mark() {}, info() {}, warn() {}, error() {}, debug() {} }
 let fail = 0
-const t = (n, c, got) => { console.log((c ? 'PASS  ' : 'FAIL  ') + n); if (!c) { fail++; console.log('      got=', got) } }
+const t = (n, c, got) => {
+  console.log((c ? 'PASS  ' : 'FAIL  ') + n)
+  if (!c) {
+    fail++
+    console.log('      got=', got)
+  }
+}
 
 // 一个会慢 200ms 响应的后端 + 一个普通后端
 let hits = 0
 const slow = http.createServer((req, res) => {
   hits++
-  setTimeout(() => { res.writeHead(200); res.end('ok:' + req.url) }, 200)
+  setTimeout(() => {
+    res.writeHead(200)
+    res.end('ok:' + req.url)
+  }, 200)
 })
 await new Promise(r => slow.listen(18801, '127.0.0.1', r))
 
@@ -32,16 +41,34 @@ fs.cpSync(REPO, path.join(YZ, 'plugins/web-mount'), {
 })
 const PLUGIN = path.join(YZ, 'plugins/web-mount')
 
-fs.writeFileSync(path.join(PLUGIN, 'config/config.json'), JSON.stringify({
-  routes: [{ enable: true, name: 'slow', matchPath: '/s', host: '127.0.0.1', port: 18801, prefix: '/' }],
-  autoReload: false, statusPage: false, allowEmbed: true, configEditor: true,
-}))
+fs.writeFileSync(
+  path.join(PLUGIN, 'config/config.json'),
+  JSON.stringify({
+    routes: [{ enable: true, name: 'slow', matchPath: '/s', host: '127.0.0.1', port: 18801, prefix: '/' }],
+    autoReload: false,
+    statusPage: false,
+    allowEmbed: true,
+    configEditor: true,
+  }),
+)
 
-const express = { stack: [], use(f) { this.stack.push(f) } }
+const express = {
+  stack: [],
+  use(f) {
+    this.stack.push(f)
+  },
+}
 const server = http.createServer((req, res) => {
-  const next = () => { res.writeHead(418); res.end('yunzai') }
+  const next = () => {
+    res.writeHead(418)
+    res.end('yunzai')
+  }
   let i = 0
-  const step = () => { const fn = express.stack[i++]; if (!fn) return next(); fn(req, res, step) }
+  const step = () => {
+    const fn = express.stack[i++]
+    if (!fn) return next()
+    fn(req, res, step)
+  }
   step()
 })
 globalThis.Bot = { express, server }
@@ -56,7 +83,7 @@ function one(i) {
   return new Promise((resolve, reject) => {
     const r = http.request({ host: '127.0.0.1', port: PORT, path: '/s/item/' + i, agent }, res => {
       let s = ''
-      res.on('data', c => s += c)
+      res.on('data', c => (s += c))
       res.on('end', () => resolve({ s: res.statusCode, body: s }))
     })
     r.on('error', reject)
@@ -68,19 +95,32 @@ const N = 100
 const t0 = Date.now()
 const all = await Promise.all(Array.from({ length: N }, (_, i) => one(i)))
 const ms = Date.now() - t0
-const ok = all.filter(x => x.s === 200 && x.body.startsWith("ok:/item/"))
-t(`${N} 个并发请求全部成功`, all.every(x => x.s === 200), all.filter(x => x.s !== 200).map(x => x.s).slice(0, 5))
+const ok = all.filter(x => x.s === 200 && /^ok:\/item\/\d+$/.test(x.body))
+t(
+  `${N} 个并发请求全部成功`,
+  all.every(x => x.s === 200),
+  all
+    .filter(x => x.s !== 200)
+    .map(x => x.s)
+    .slice(0, 5),
+)
 t('后端实际收到 100 次（不丢不重）', hits === N, hits)
+t('每个响应体都能对上自己的请求路径', ok.length === N, ok.length, N)
 t('并发下总耗时合理（应 < 3s）', ms < 3000, ms + 'ms')
 console.log(`      耗时 ${ms}ms，avg ${(ms / N).toFixed(1)}ms/req`)
 
 // 空路由 GET 也必须有响应
 const empty = await new Promise(res => {
-  http.get({ host: '127.0.0.1', port: PORT, path: '/s/nothing', headers: {} }, r => { r.resume(); r.on('end', () => res(r.statusCode)) })
+  http.get({ host: '127.0.0.1', port: PORT, path: '/s/nothing', headers: {} }, r => {
+    r.resume()
+    r.on('end', () => res(r.statusCode))
+  })
 })
 t('串行 GET 正常返回', empty === 200, empty)
 
-agent.destroy(); server.close(); slow.close()
+agent.destroy()
+server.close()
+slow.close()
 fs.rmSync(YZ, { recursive: true, force: true })
 console.log(fail ? `\n${fail} 项失败` : '\n全部通过')
 process.exit(fail ? 1 : 0)

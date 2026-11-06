@@ -29,9 +29,13 @@ export function init(ctx) {
     priority: 60,
   })
 
-  const notReady = res => res.status(503).json({
-    ok: false, code: 503, result: null, message: 'web-mount 插件尚未就绪，请确认插件已加载',
-  })
+  const notReady = res =>
+    res.status(503).json({
+      ok: false,
+      code: 503,
+      result: null,
+      message: 'web-mount 插件尚未就绪，请确认插件已加载',
+    })
 
   // 运行时状态（路由、在线探测、请求统计、站点导航）
   registerApi('get', '/data', async (req, res) => {

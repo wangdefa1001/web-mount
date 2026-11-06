@@ -3,8 +3,16 @@
  * 这一层是「请求打到哪个后端」的唯一决策点，改错了现象很隐蔽，所以单独覆盖。
  */
 import {
-  pathnameOf, queryOf, subPath, joinPath, hasAny,
-  refContext, routeMatches, findRoute, sortRoutes,
+  pathnameOf,
+  queryOf,
+  subPath,
+  joinPath,
+  hasAny,
+  refContext,
+  routeMatches,
+  findRoute,
+  sortRoutes,
+  expandAutoApi,
 } from '../lib/route.js'
 import { makeChecker } from './sandbox.mjs'
 
@@ -37,40 +45,72 @@ check('hasAny 忽略空段', hasAny('abc', '|,abc,') === true, true, true)
 const H = (o = {}) => ({ host: 'local:2536', ...o })
 
 // 同源：Referer 的 host 与本次请求 Host 一致 → 取 pathname
-check('同源 Referer 取 pathname',
+check(
+  '同源 Referer 取 pathname',
   refContext(H({ referer: 'http://local:2536/zy/page?a=1' }), {}) === '/zy/page',
-  refContext(H({ referer: 'http://local:2536/zy/page?a=1' }), {}), '/zy/page')
+  refContext(H({ referer: 'http://local:2536/zy/page?a=1' }), {}),
+  '/zy/page',
+)
 
 // 跨站：默认必须被剔除（防伪造）
-check('跨站 Referer 默认被剔除',
+check(
+  '跨站 Referer 默认被剔除',
   refContext(H({ referer: 'http://evil.com/zy' }), {}) === '',
-  refContext(H({ referer: 'http://evil.com/zy' }), {}), '')
+  refContext(H({ referer: 'http://evil.com/zy' }), {}),
+  '',
+)
 
 // 显式关掉同源限制 → 保留（兼容旧行为）
-check('关闭同源限制后跨站也参与比对',
+check(
+  '关闭同源限制后跨站也参与比对',
   refContext(H({ referer: 'http://evil.com/zy' }), { refererSameOriginOnly: false }) === '/zy',
-  refContext(H({ referer: 'http://evil.com/zy' }), { refererSameOriginOnly: false }), '/zy')
+  refContext(H({ referer: 'http://evil.com/zy' }), { refererSameOriginOnly: false }),
+  '/zy',
+)
 
 // 查询串不能当来源路径（旧实现的误匹配）
-check('查询串里的关键字不参与匹配',
+check(
+  '查询串里的关键字不参与匹配',
   refContext(H({ referer: 'http://local:2536/?q=/zy' }), {}) === '/',
-  refContext(H({ referer: 'http://local:2536/?q=/zy' }), {}), '/')
+  refContext(H({ referer: 'http://local:2536/?q=/zy' }), {}),
+  '/',
+)
 
 // 畸形/相对值：没有 host，按原文路径参与
-check('畸形 Referer 退化为路径字符串',
+check(
+  '畸形 Referer 退化为路径字符串',
   refContext(H({ referer: '/webui/index.html' }), {}) === '/webui/index.html',
-  refContext(H({ referer: '/webui/index.html' }), {}), '/webui/index.html')
+  refContext(H({ referer: '/webui/index.html' }), {}),
+  '/webui/index.html',
+)
 
 // Origin 与 Referer 同时存在时都要参与
-check('Referer 与 Origin 合并',
+check(
+  'Referer 与 Origin 合并',
   refContext(H({ referer: 'http://local:2536/zy', origin: 'http://local:2536' }), {}) === '/zy /',
-  refContext(H({ referer: 'http://local:2536/zy', origin: 'http://local:2536' }), {}), '/zy /')
+  refContext(H({ referer: 'http://local:2536/zy', origin: 'http://local:2536' }), {}),
+  '/zy /',
+)
 
 /* ---------- 单条路由匹配 ---------- */
-const R = (o) => ({ enable: true, matchPath: '/api', matchReferer: '', matchMethod: '', host: 'h', port: 1, prefix: '/api', ...o })
+const R = o => ({
+  enable: true,
+  matchPath: '/api',
+  matchReferer: '',
+  matchMethod: '',
+  host: 'h',
+  port: 1,
+  prefix: '/api',
+  ...o,
+})
 
 check('匹配：路径命中即通过', routeMatches(R(), '', '/api/x', 'GET') === true, true, true)
-check('不匹配：路径不命中', routeMatches(R(), '', '/apix', 'GET') === false, routeMatches(R(), '', '/apix', 'GET'), false)
+check(
+  '不匹配：路径不命中',
+  routeMatches(R(), '', '/apix', 'GET') === false,
+  routeMatches(R(), '', '/apix', 'GET'),
+  false,
+)
 check('不匹配：方法受限', routeMatches(R({ matchMethod: 'POST' }), '', '/api', 'GET') === false, false, false)
 check('匹配：方法相符', routeMatches(R({ matchMethod: 'POST' }), '', '/api', 'POST') === true, true, true)
 check('不匹配：来源受限', routeMatches(R({ matchReferer: '/zy' }), '/app', '/api', 'GET') === false, false, false)
@@ -84,9 +124,21 @@ const sorted = sortRoutes([
   { matchPath: '/api/user', name: 'b' },
   { matchPath: '/api', name: 'c' },
 ])
-check('最长路径优先', sorted.map(r => r.name).join(',') === 'b,a,c,root', sorted.map(r => r.name), ['b', 'a', 'c', 'root'])
-check('同长度保持配置顺序', sorted.filter(r => r.matchPath === '/api').map(r => r.name).join(',') === 'a,c',
-  sorted.filter(r => r.matchPath === '/api').map(r => r.name), ['a', 'c'])
+check(
+  '最长路径优先',
+  sorted.map(r => r.name).join(',') === 'b,a,c,root',
+  sorted.map(r => r.name),
+  ['b', 'a', 'c', 'root'],
+)
+check(
+  '同长度保持配置顺序',
+  sorted
+    .filter(r => r.matchPath === '/api')
+    .map(r => r.name)
+    .join(',') === 'a,c',
+  sorted.filter(r => r.matchPath === '/api').map(r => r.name),
+  ['a', 'c'],
+)
 
 // 用户真实配置里的三个 /api 分流
 const apiRoutes = sortRoutes([
@@ -108,11 +160,102 @@ const nested = sortRoutes([
   { matchPath: '/api', name: 'api', port: 1 },
   { matchPath: '/api/user', name: 'user', port: 2 },
 ])
-check('/api/user 命中更具体的那条',
+check(
+  '/api/user 命中更具体的那条',
   findRoute(nested, '/api/user/1', '', 'GET').name === 'user',
-  findRoute(nested, '/api/user/1', '', 'GET').name, 'user')
+  findRoute(nested, '/api/user/1', '', 'GET').name,
+  'user',
+)
 
 check('空路由表返回 undefined', findRoute([], '/x', '', 'GET') === undefined, findRoute([], '/x', '', 'GET'), undefined)
+
+/* ---------- 自动派生 /api ---------- */
+const page = o => ({ enable: true, matchPath: '/zy', matchReferer: '', host: 'h', port: 8765, prefix: '/app', ...o })
+const derivedOf = list => expandAutoApi(list).filter(r => r.derived)
+
+{
+  const d = derivedOf([page({ autoApi: true })])
+  check(
+    '开启 autoApi 生成一条 /api',
+    d.length === 1 && d[0].matchPath === '/api',
+    d.map(x => x.matchPath),
+    ['/api'],
+  )
+  check('派生路由的来源是页面路径', d[0].matchReferer === '/zy', d[0].matchReferer, '/zy')
+  check('派生路由前缀是 /api', d[0].prefix === '/api', d[0].prefix, '/api')
+  check('派生路由进同一后端', d[0].host === 'h' && d[0].port === 8765, [d[0].host, d[0].port], ['h', 8765])
+  check('派生路由不成为服务入口', d[0].entry === false, d[0].entry, false)
+}
+
+{
+  const d = derivedOf([page({ autoApi: true }), page({ matchPath: '/app', autoApi: true })])
+  check('同端口多页面合并成一条', d.length === 1, d.length, 1)
+  check('合并后来源是多个路径', d[0].matchReferer === '/zy|/app', d[0].matchReferer, '/zy|/app')
+}
+
+{
+  const d = derivedOf([
+    page({ autoApi: true }),
+    page({ matchPath: '/webui', port: 6099, prefix: '/webui', autoApi: true }),
+  ])
+  check('不同端口各自派生', d.length === 2, d.length, 2)
+}
+
+{
+  const d = derivedOf([page({ autoApi: true }), page({ matchPath: '/api', prefix: '/api', matchReferer: '/zy' })])
+  check('已手工配 /api 的后端不再派生', d.length === 0, d.length, 0)
+}
+
+{
+  const d = derivedOf([
+    page({ matchPath: '/api', prefix: '/api' }), // 手工 /api 在 8765
+    page({ matchPath: '/webui', port: 6099, prefix: '/webui', autoApi: true }), // 页面在 6099
+  ])
+  check(
+    '手工 /api 只影响同一后端',
+    d.length === 1 && d[0].port === 6099,
+    d.map(x => x.port),
+    [6099],
+  )
+}
+
+{
+  const d = derivedOf([page({ matchPath: '/', autoApi: true })])
+  check('根挂载不派生（来源无法区分）', d.length === 0, d.length, 0)
+}
+
+{
+  const d = derivedOf([page({ autoApi: false })])
+  check('未开启 autoApi 不派生', d.length === 0, d.length, 0)
+}
+
+{
+  const input = [page({ autoApi: true }), page({ matchPath: '/other', port: 7000 })]
+  const out = expandAutoApi(input)
+  check(
+    '原有路由顺序不变，派生追加在末尾',
+    out.slice(0, 2).every((r, i) => r === input[i]) && out[2].derived === true,
+    out.map(r => r.matchPath),
+    ['/zy', '/other', '/api'],
+  )
+}
+
+{
+  // 手工 /api 与派生 /api 共存时，靠来源各自分流，互不抢
+  const sorted = sortRoutes(
+    expandAutoApi([
+      page({ matchPath: '/api', prefix: '/api', matchReferer: '/manual' }),
+      page({ matchPath: '/qb', port: 6099, prefix: '/qb', autoApi: true }),
+    ]),
+  )
+  const pickPort = ref => {
+    const r = findRoute(sorted, '/api/x', ref)
+    return r ? r.port : null
+  }
+  check('手工 /api 按来源命中', pickPort('/manual') === 8765, pickPort('/manual'), 8765)
+  check('派生 /api 按来源命中', pickPort('/qb') === 6099, pickPort('/qb'), 6099)
+  check('都不匹配时不转发', pickPort('/nope') === null, pickPort('/nope'), null)
+}
 
 /* ---------- 汇总 ---------- */
 const failed = check.summary('路由层 ')

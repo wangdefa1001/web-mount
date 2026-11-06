@@ -241,8 +241,9 @@
       if (r.matchReferer) tags += '<span class="tag">来源 ' + esc(r.matchReferer) + '</span>';
       if (r.matchMethod) tags += '<span class="tag">' + esc(r.matchMethod) + '</span>';
       if (r.ws) tags += '<span class="tag ws">WS</span>';
+      if (r.auto) tags += '<span class="tag auto" title="由「自动 /api」派生，不写进 config.json">自动</span>';
       if (r.entry === true) tags += '<span class="tag entry">入口</span>';
-      else if (r.entry === false) tags += '<span class="tag off">不进导航</span>';
+      else if (r.entry === false && !r.auto) tags += '<span class="tag off">不进导航</span>';
       var stCls = r.lastStatus >= 400 ? 'st-err' : (r.lastStatus ? 'st-ok' : '');
       var target = esc(r.host) + ':' + esc(r.port) +
         (r.prefix && r.prefix !== '/' ? '<span style="opacity:.6">' + esc(r.prefix) + '</span>' : '');
@@ -263,7 +264,9 @@
 
   function renderMeta() {
     var st = S.settings || {};
-    $('meta').textContent = (S.routes || []).length + ' 条路由 · 运行 ' + uptime(S.uptime || 0);
+    var t = S.totals || {};
+    $('meta').textContent = (S.routes || []).length + ' 条路由' +
+      (t.auto ? '（含 ' + t.auto + ' 条自动 /api）' : '') + ' · 运行 ' + uptime(S.uptime || 0);
     $('foot-info').innerHTML =
       '热重载 ' + (st.autoReload ? '<b style="color:var(--ok)">开启</b>' : '关闭') +
       ' · 调试日志 ' + (st.debug ? '开启' : '关闭') +
@@ -370,6 +373,8 @@
           '<option value="0"' + (r.entry === false ? ' selected' : '') + '>隐藏</option>' +
         '</select></label>' +
         '<label class="chk"><input type="checkbox" class="rt-ws"' + (r.ws ? ' checked' : '') + '>WebSocket</label>' +
+        '<label class="chk" title="页面里的前端代码用绝对路径 /api/... 发请求时，自动把 /api 分到这个后端">' +
+          '<input type="checkbox" class="rt-autoApi"' + (r.autoApi ? ' checked' : '') + '>自动 /api</label>' +
       '</div>';
     d.querySelector('.rt-del').addEventListener('click', function () { d.remove(); });
     return d;
@@ -420,6 +425,7 @@
         port: Number(el.querySelector('.rt-port').value) || 0,
         prefix: el.querySelector('.rt-prefix').value.trim(),
         ws: el.querySelector('.rt-ws').checked,
+        autoApi: el.querySelector('.rt-autoApi').checked,
       };
       if (entrySel === '1') r.entry = true;
       else if (entrySel === '0') r.entry = false;

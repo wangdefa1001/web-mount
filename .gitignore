@@ -3,3 +3,12 @@
 # 请勿提交到 git，以免把本机信息/差异当成修改。
 # 仓库里提交的是默认模板：config/default_config.json
 config/config.json
+
+# 开发期依赖（eslint / prettier），插件运行时不需要
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# 系统杂项
+.DS_Store
+*.swp

@@ -1,0 +1,9 @@
+# 前端资源是手工调过的版式，且会被内联进状态页（任何空格变化都只是噪音），
+# 不纳入自动格式化；它们仍受 eslint 检查。
+guoba/dashboard.js
+guoba/dashboard.css
+guoba/dashboard.html
+node_modules
+package-lock.json
+config/config.json
+config/default_config.json

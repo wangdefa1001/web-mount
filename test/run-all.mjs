@@ -21,7 +21,10 @@ let failed = 0
 for (const [title, file] of suites) {
   console.log(`\n\x1b[1m▶ ${title}\x1b[0m  (${file})`)
   const r = spawnSync(process.execPath, [path.join(HERE, file)], { stdio: 'inherit' })
-  if (r.status !== 0) { failed++; console.log(`\x1b[31m✗ ${file} 失败\x1b[0m`) }
+  if (r.status !== 0) {
+    failed++
+    console.log(`\x1b[31m✗ ${file} 失败\x1b[0m`)
+  }
 }
 
 console.log('\n' + '='.repeat(56))

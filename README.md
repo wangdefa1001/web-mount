@@ -1,469 +1,258 @@
 <p align="center"><strong>web-mount</strong> · Yunzai 端口挂载插件</p>
 
-<p align="center">  
-  <em>把本机各端口服务反向代理挂载到 Yunzai HTTP 端口下的任意路径，锅巴面板可视化配置</em>  
+<p align="center">
+  <em>把本机各端口服务反向代理到 Yunzai HTTP 端口的任意路径下，锅巴面板可视化配置</em>
 </p>
 
-<p align="center">  
-  <a href="https://github.com/wangdefa1001/web-mount"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-repo-blue?logo=github"></a>  
-  <img alt="Yunzai v3" src="https://img.shields.io/badge/Yunzai-v3-green">  
-  <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A5%2016-green">  
-  <img alt="license" src="https://img.shields.io/badge/license-MIT-lightgrey">  
+<p align="center">
+  <a href="https://github.com/wangdefa1001/web-mount"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-repo-blue?logo=github"></a>
+  <img alt="Yunzai v3" src="https://img.shields.io/badge/Yunzai-v3-green">
+  <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A5%2016-green">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-lightgrey">
 </p>
 
 ---
 
-## 🆕 v1.5.4 变更
+## 这是什么
 
-- **改(结构)**:`index.js` 从 837 行拆成 238 行的入口 + `lib/route.js`(匹配)、`lib/proxy.js`(转发)、`lib/status-page.js`(状态页)。**行为与 v1.5.3 完全一致**,只换文件位置。
-- **加**:`test/route.mjs`(39 项)单独覆盖路由层 —— 这一层是「请求打到哪个后端」的唯一决策点,不依赖 HTTP 服务即可测试。
-- **删**:一处从未被调用的 `fmtTime()`。
+把跑在本机其它端口的面板、静态站、WebSocket 服务，挂到 Yunzai 的 HTTP 端口下：**只记一个端口，用不同路径访问所有服务**。
 
-## 🆕 v1.5.3 变更
-
-- **修**:服务入口在「剥离前缀」(`prefix: "/"`)场景下会丢卡片 —— 同端口上 `/ncqq` 会把 `/webui` 顶掉。
-- **修**:`matchReferer` 由「任意站点的子串匹配」改为「同源 + pathname 匹配」,堵住跨站伪造 Referer 打后端的路子(新增 `refererSameOriginOnly`)。
-- **修**:旧格式迁移会丢掉规则自带的 `matchPath`;端口写错的路由被静默丢弃且警告日志永不触发。
-- **修**:无请求体的 POST 会挂在转发超时;`config.json` 改为原子写,坏文件自动备份。
-- **修**:WebSocket `upgrade` 绕过来源/方法限制,`/ws` 的分流「谁在前谁赢」。
-- **改**:状态探测按 `host:port` 去重;新增 `trailingSlashRedirect` 开关。
-- **加**:`node test/run-all.mjs` 自检(28 项端到端 + 归一化/兼容/原子写/并发)。
+例如 `127.0.0.1:2536/zy` → GsCore 的 `8765`，`127.0.0.1:2536/qinglong` → 青龙的 `5700`。
 
 ---
 
-## 📖 这是什么
-
-`web-mount` 是一个 **Yunzai v3** 插件。它把运行在本机的其它端口服务(如三方面板、静态站、WebSocket 服务)通过 `Bot.express` 中间件 + `Bot.server` 的 `upgrade` 事件,**反向代理挂载到 Yunzai HTTP 端口下的任意路径**,并在锅巴面板里可视化配置。
-
-一句话:**你只需要记住一个端口(Yunzai 的 HTTP 端口,比如 `127.0.0.1:2536`),通过不同的路径访问所有服务。**
-
----
-
-## ✨ 特性
-
-- **统一路由模型 `routes[]`**:一行一条规则,匹配、按来源分流都在同一张表里,没有两套规则难理解的旧设计。
-- **按来源分流**:不同服务共用同一条绝对路径(最常见是 `/api`)也不打架 —— 用 `matchReferer` 按请求来源(Referer/Origin)分到不同后端。
-- **按 HTTP 方法分流**:`matchMethod` 可限定只让 `GET`/`POST` 命中,例如同一路径的读接口与写接口分到不同后端。
-- **最长路径优先**:`/memes` 永远优先于 `/`,不会被宽泛的兜底路由抢走;同长度时按配置顺序(保证 `/api` 分流的优先级不变)。
-- **支持 WebSocket**:NapCat 实时日志、WebSocket 面板等可用 `ws: true` 开启,双向透传 + 连接清理。
-- **配置热重载**:改完 `config.json` 或锅巴里点保存,约 2 秒自动生效,**不用重启 Yunzai**。
-- **服务入口**：把每台后端聚合成一个卡片，点一下就在面板/状态页内用 iframe 打开，不用另开标签页。
-- **页面内配置**：状态页/面板页里直接改全局设置与路由，保存即写 `config.json` 并立即重载。
-- **可视化状态页**:访问 `/__web-mount__` 打开仪表盘 —— 概览卡片、最近 60 秒流量图、可搜索/排序的路由表、后端在线探测(带延迟)、一键重载配置与清空统计;自动刷新、深色模式、手机端卡片式布局。可设访问口令,输入一次记住 7 天。
-- **转发健壮性**:正确处理 `body-parser` 已消费请求流的情况(POST/PUT 内容不会丢)、超时保护、失败日志(同路由 10 秒限流)、`X-Forwarded-*` 追加。
-- **旧格式迁移**:老版 `mounts + dispatch` 配置会自动转成 `routes[]`,升版不丢配置。
-
----
-
-## 🚀 安装
+## 安装
 
 ```bash
 cd your-yunzai/plugins
 git clone https://github.com/wangdefa1001/web-mount web-mount
-# 或直接下载 zip 解压到 plugins/web-mount
 ```
 
-重启 Yunzai 即可。插件依赖 Yunzai 的 `Bot.express` 与 `Bot.server`(HTTP 服务),请确保 Yunzai 的 HTTP 端口已开启。
+重启 Yunzai。需要 Yunzai 的 `Bot.express` 与 `Bot.server`（即 HTTP 服务已开启）。
+
+升级：`cd plugins/web-mount && git pull`，然后**重启 Yunzai**（改的是 JS，热重载只监听配置文件）。
 
 ---
 
-## ⚙️ 用法(锅巴面板)
+## 路由字段
 
-打开锅巴面板 → 左侧菜单 **端口挂载**(或在「插件管理」里点 `web-mount`),在「路由列表」里增删即可。
+一条路由一行，全部字段都在同一张表里：
 
-**保存即生效**:默认开启热重载,保存后约 2 秒插件自动重载路由,不用重启 Yunzai。若把「配置热重载」关掉,则需要重启 Yunzai。
+| 字段 | 说明 |
+|---|---|
+| `enable` | 是否启用 |
+| `name` | 名称，用于日志与入口卡片 |
+| `matchPath` | 浏览器访问的路径前缀，如 `/zy`、`/api` |
+| `matchReferer` | 来源（Referer/Origin）包含此串才命中，`\|` 分隔多个；留空=不限 |
+| `matchMethod` | 限定方法，如 `GET`、`POST\|PUT`；留空=不限 |
+| `host` / `port` | 目标主机与端口 |
+| `prefix` | 目标内前缀，见下节 |
+| `ws` | 是否同时转发 WebSocket |
+| `entry` | 是否作为「服务入口」卡片：`true` 显示 / `false` 隐藏 / 留空自动 |
+| `autoApi` | 自动生成一条 `/api` 分流，见「自动 /api」 |
 
-每条规则字段:
+**命中规则**：`matchPath` 必须匹配；另两项留空则不限制，填了就要同时满足。
+**优先级**：路径越长越优先（`/memes` 先于 `/`），同长度按配置顺序，首条命中即转发。所以 `/api` 的多条分流规则，把更精确的放前面。
 
-| 字段              | 说明                                             |
-| --------------- | ---------------------------------------------- |
-| `enable`        | 是否启用                                           |
-| `name`          | 名称,便于辨认与日志                                     |
-| `matchPath`     | 浏览器访问的 URL 路径前缀,如 `/api`、`/login`、`/memes`     |
-| `matchReferer`  | 请求来源(Referer/Origin)包含此字符串才命中,`\|` 分隔多个;留空=不限制 |
-| `matchMethod`   | 限定 HTTP 方法,如 `GET`、`POST\|PUT`;留空=不限制          |
-| `host` / `port` | 目标主机 / 端口                                      |
-| `prefix`        | 目标内前缀(服务根路径,如 `/app`、`/login`)                 |
-| `ws`            | 该服务是否需要 WebSocket 转发                           |
-| `entry` | 是否作为「服务入口」的页面入口:显示 / 隐藏 / 留空=自动 |
-
-`matchPath` 必须匹配;`matchReferer` / `matchMethod` 留空则不限制,填了就要同时满足。  
-**优先级**:路径**越长越优先**(`/memes` 先于 `/`);**同长度时按配置顺序**,首条命中即转发。所以 `/api` 的多条分流规则,把更精确的放前面即可。
-
-> **`matchReferer` 只比对 pathname,且默认只认同源来源。** `Referer` 是客户端完全可控的请求头,任意网页都能伪造。默认(`refererSameOriginOnly: true`)只有 Referer/Origin 的 host 与本次请求的 Host 一致时才参与分流,跨站来源一律落到「没有来源限制」的兜底路由。这挡住了「陌生网页把你的 `/api` 打到 GsCore/NapCat」的路子。
-
-### 全局设置
-
-| 字段             | 默认      | 说明                                                                 |
-| -------------- | ------- | ------------------------------------------------------------------ |
-| `autoReload`   | `true`  | 配置热重载,改完约 2 秒生效                                                    |
-| `statusPage`   | `true`  | 开启 `/__web-mount__` 状态页                                            |
-| `statusToken`  | 空       | 状态页访问口令。设置后打开状态页会先出现登录框,输入正确后记住 7 天(Cookie 存哈希,不含明文)。**公网暴露时建议设置** |
-| `debug`        | `false` | 每次转发打印请求、状态码、耗时                                                    |
-| `proxyTimeout` | `30000` | 转发超时(毫秒),后端卡死时自动断开                                                 |
-| `allowEmbed` | `true` | 允许把挂载的页面嵌进面板/状态页(会剥掉后端的 `X-Frame-Options`) |
-| `configEditor` | `true` | 是否允许在页面里改配置;关掉后抽屉只读 |
-| `refererSameOriginOnly` | `true` | 来源分流只认同源 Referer/Origin。**Referer 可被任意站点伪造**,关掉后陌生网页也能把 `/api` 打到你的后端 |
-| `trailingSlashRedirect` | `true` | 访问 `/memes` 时 302 到 `/memes/`,让页面里的 `./x.js` 相对资源解析正确。某些 SPA 对多次跳转敏感可关掉 |
+> `matchReferer` 只比对 pathname，且默认要求同源（`refererSameOriginOnly`）。Referer 谁都能伪造，不加这条限制，陌生网页就能把你的 `/api` 打到 GsCore/NapCat。
 
 ---
 
-## 🔍 示例:挂载一个 GsCore 面板(端口 8765)
+## `matchPath` 与 `prefix`
 
-假设本机跑着 GsCore(面板根路径为 `/app`,接口前缀为 `/api`),你想通过 `127.0.0.1:2536` 访问它。
+公式：**转发路径 = `prefix` + (请求路径去掉 `matchPath` 后的剩余部分)**
 
-**1) 面板入口:**
+| matchPath | prefix | 访问 | 转发到 | 用途 |
+|---|---|---|---|---|
+| `/memes` | `/memes` | `/memes/a.png` | `/memes/a.png` | 原样透传 |
+| `/zy` | `/app` | `/zy/x` | `/app/x` | 换前缀（别名） |
+| `/qinglong` | `/` | `/qinglong/login` | `/login` | 剥离前缀到后端根 |
+| `/ncqq` | `/` | `/ncqq/abc` | `/abc` | 剥离前缀 |
+
+`prefix: "/"` 是「剥掉挂载前缀」，适合后端本身就跑在根目录的服务（青龙、NapCat、agents 都是）。
+
+---
+
+## 自动 /api
+
+面板类服务（GsCore、NapCat、agents…）的页面挂在 `/zy`、`/webui` 下，但页面里的前端代码是用**绝对路径** `/api/...` 发请求的。这些请求到达 Yunzai 时已经不含挂载前缀，只能靠来源认领。
+
+以前每条页面都要手工再配一条：
 
 ```json
-{ "enable": true, "name": "GsCore面板", "matchPath": "/zy", "matchReferer": "", "host": "127.0.0.1", "port": 8765, "prefix": "/app", "ws": false }
+{ "matchPath": "/api", "matchReferer": "/zy", "prefix": "/api", "port": 8765 }
 ```
 
-访问 `http://127.0.0.1:2536/zy` → 转发到 `http://127.0.0.1:8765/app`。
-
-**2) 前端用到的绝对路径资源(SPA 常见):**
+现在只要在网页那条路由上勾选 **「自动 /api」**（`"autoApi": true`），插件会自己生成这条分流：
 
 ```json
-{ "enable": true, "name": "GsCore资源", "matchPath": "/app", "matchReferer": "", "host": "127.0.0.1", "port": 8765, "prefix": "/app", "ws": false }
+{ "enable": true, "name": "GsCore面板", "matchPath": "/zy", "port": 8765, "prefix": "/app", "autoApi": true }
 ```
 
-页面内请求 `/app/...` → 转发到 `http://127.0.0.1:8765/app/...`。
+启动日志与路由表里会标出来，`config.json` 里不会多出条目：
 
-**3) 接口 `/api`(可能被多个服务共用 → 按来源分流):**
-
-```json
-{ "enable": true, "name": "GsCore API", "matchPath": "/api", "matchReferer": "/zy|/app", "host": "127.0.0.1", "port": 8765, "prefix": "/api", "ws": false }
+```
+[web-mount] /api(来源 /zy) -> 127.0.0.1:8765/api 已自动生成
 ```
 
-`Referer` 含 `/zy` 或 `/app` 的 `/api` 请求 → 转发到 `http://127.0.0.1:8765/api`。
+生成规则（保守为先）：
 
-> **为什么 `/zy` 需要多条?** GsCore 面板页面往往用**绝对路径**(`/app`、`/api`)。访问 `/zy` 拿到页面后,页面会再去请求 `/app/...`、`/api/...`,浏览器不会自动拼到 `/zy` 后面,所以要分别为这些绝对路径建路由。这是这类前端反向代理的通用解法。
+- 同一后端的多个页面合并成一条，来源是 `/zy|/app` 这种多路径，不重复建；
+- 后端**已经有手工 `/api` 路由时不再生成** —— 手工配置优先；
+- `matchPath` 为 `/` 的兜底路由不生成（来源无从区分，等于不设防）；
+- 派生出来的路由不进「服务入口」，也不会写回配置文件。
 
 ---
 
-## 🔧 新增一个服务(以青龙 5700 为例)
+## 全局设置
 
-### ⚠️ 先看:子路径面板必须设置「基础路径」
-
-青龙这类 umi/react 打包的面板,前端资源与路由默认按**根路径**走。直接挂在 `/qinglong` 下会白屏,浏览器控制台报:
-
-```
-Refused to apply style from '.../login/umi.xxx.css' because its MIME type ('text/html') ...
-Refused to execute script from '.../login/umi.xxx.js' because its MIME type ('text/html') ...
-```
-
-**原因**:面板要命中"我部署在 `/qinglong/` 下"这件事,得靠它自己的基础路径配置。没配的话,资源/接口路径会脱离前缀,后端找不到就返回 SPA 兜底 HTML(text/html),MIME 校验拒绝执行。
-
-**解法(两步)**:
-
-**第 1 步:让面板知道自己的基础路径。** 青龙提供了官方环境变量 **`QlBaseUrl`**:
-
-```bash
-# Docker
-docker run -dit ... -e QlBaseUrl="/qinglong/" -e QlPort="5700" whyour/qinglong
-# docker-compose.yml
-environment:
-  - QlBaseUrl=/qinglong/
-# 非 Docker / 面具模块:在启动脚本的 env 里加 QlBaseUrl=/qinglong/(注意 pm2 会缓存旧环境,改后要连 pm2 一起重启)
-```
-
-> 规则:`QlBaseUrl` 必须**以 `/` 开头和结尾**,且要和你挂载的路径一致(挂 `/qinglong` 就填 `/qinglong/`)。
-
-**第 2 步:插件用「剥离前缀」转发**(`prefix` 填 `/`)。
-
-这里有个**关键点**:青龙的 `QlBaseUrl` 只影响**前端运行时**(它用 `/qinglong/` 作为 API 与路由的 base),而**后端的静态资源和接口实体仍在根目录**(`/umi.xxx.js`、`/api/env.js`)。所以代理**必须把 `/qinglong` 前缀剥掉**,转发到后端根:
-
-```json
-{ "enable": true, "name": "青龙面板", "matchPath": "/qinglong", "matchReferer": "", "host": "127.0.0.1", "port": 5700, "prefix": "/", "ws": false }
-```
-
-- `matchPath=/qinglong` + `prefix=/` = **剥掉 `/qinglong` 转发到后端根目录**:  
-  `/qinglong/umi.xxx.js` → `:5700/umi.xxx.js`、`/qinglong/api/env.js` → `:5700/api/env.js`、`/qinglong/api/...` → `:5700/api/...`、`/qinglong/login` → `:5700/login`。
-- 浏览器始终停在 `/qinglong/...` 下(QlBaseUrl 让前端路由与接口都带这个前缀),插件再剥掉转发,两边就对齐了。
-- **一处不对齐的典型症状**:若 `prefix` 误填 `/qinglong`(原样透传),`/qinglong/api/env.js` 在后端不存在 → 返回 HTML → 前端拿不到 QlBaseUrl → 又跳回根路径 `/login` 白屏。**务必用 `prefix=/`。**
-
-> 常见误区:以为"设了 QlBaseUrl 就该透传"。实际上 QlBaseUrl 只改前端,后端仍在根;**剥离**才是正解。
-
-### 对不支持的子路径的面板怎么办?
-
-极少数面板**没有**基础路径配置项,此时用子路径代理基本无解(前端写死了根路径)。可选方案:
-
-1. **改用子域名**:如 `ql.example.com` 反代到 `127.0.0.1:5700`,面板用根路径正常。
-2. 用能改写响应体的代理(Nginx `sub_filter` 等)把绝对路径重写掉 —— 较脆弱,不推荐。
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `autoReload` | `true` | 改配置文件约 2 秒自动生效 |
+| `statusPage` | `true` | 开启 `/__web-mount__` 状态页 |
+| `statusToken` | 空 | 状态页口令。设了才允许在页面里改配置，公网暴露时务必设置 |
+| `debug` | `false` | 每次转发打印方法、URL、状态码、耗时 |
+| `proxyTimeout` | `30000` | 转发超时（毫秒） |
+| `allowEmbed` | `true` | 允许页面被嵌进面板，转发时剥掉 `X-Frame-Options` 与 CSP 的 `frame-ancestors` |
+| `configEditor` | `true` | 是否允许在页面里改配置 |
+| `refererSameOriginOnly` | `true` | 来源分流只认同源；关掉等于允许任意站点伪造来源 |
+| `trailingSlashRedirect` | `true` | 访问 `/memes` 时 302 到 `/memes/`，让 `./x.js` 这类相对资源解析正确 |
 
 ---
 
-## 🔀 进阶:`matchPath` 与 `prefix` 的区别
+## 状态页与锅巴面板
 
-`prefix` 决定转发到后端的路径怎么拼。记住公式:**转发路径 = `prefix` + (请求去掉 `matchPath` 后的剩余路径)**。
+**状态页**：浏览器打开 `http://127.0.0.1:2536/__web-mount__`。概览卡片、最近 60 秒流量、可搜索排序的路由表、后端在线探测（带延迟）、服务入口卡片，以及一键重载/清空统计。
 
-| matchPath   | prefix   | 访问                | 转发到后端          | 适用                               |
-| ----------- | -------- | ----------------- | -------------- | -------------------------------- |
-| `/memes`    | `/memes` | `/memes/a.png`    | `/memes/a.png` | 原样透传(后端本身带该前缀)                   |
-| `/zy`       | `/app`   | `/zy/x`           | `/app/x`       | 换前缀(别名)                          |
-| `/qinglong` | `/`      | `/qinglong/login` | `/login`       | **剥离前缀**到后端根(配合 `QlBaseUrl` 的面板) |
-| `/ncqq`     | `/`      | `/ncqq/abc`       | `/abc`         | 剥离前缀(后端在根目录)                     |
+**锅巴面板**：装了 [guoba-plugin-next](https://gitee.com/longhengmu/guoba-plugin-next) 后，侧边栏「扩展页面」里会多一个「端口挂载」，走锅巴自己的登录鉴权，不用再记状态页地址。
+
+两处是**同一份数据**、**同一套页面**，只有鉴权方式不同。
+
+给脚本用的接口：
+
+```
+GET  /__web-mount__?format=json     # 完整状态（需登录，或带 header x-wm-token: <口令>）
+POST /__web-mount__/reload          # 重载配置
+POST /__web-mount__/reset           # 清空统计
+GET  /__web-mount__/logout          # 退出登录
+```
+
+口令登录后下发 `wm_auth` Cookie（存的是口令的 SHA-256，`HttpOnly`，7 天），连续错 5 次锁该 IP 60 秒。
+
+> 状态页会暴露本机内部端口。端口映射到公网时，请设 `statusToken`，或把 `statusPage` 关掉在锅巴里看。
 
 ---
 
-## 🩺 状态页 `/__web-mount__`
+## 服务入口
 
-在 Yunzai 的 HTTP 端口上访问 `http://127.0.0.1:2536/__web-mount__`。
+把每台后端聚成一张卡片，点一下在页内 iframe 打开。
 
-**设了口令就先进登录页**,输入一次即可(Cookie 记住 7 天,不用再输);没设口令直接进仪表盘。
+后端返回 `X-Frame-Options` / CSP `frame-ancestors` 时，转发阶段会剥掉（仅 `allowEmbed` 开启时），所以同源 iframe 能正常显示。
 
-### 页面上能做什么
+**一个端口上可能挂着多个页面**（GsCore 的 `/zy` 与它插件页 `/daily-analyisis-gscore` 就同在 8765），所以判断「是不是同一个页面」看的是 `prefix`，不是端口：
 
-| 区域   | 功能                                                         |
-| ---- | ---------------------------------------------------------- |
-| 顶部   | 运行时长、自动刷新开关(3 秒)、刷新、**重载配置**(改完 JSON 不用重启)、**清空统计**、退出登录   |
-| 概览卡片 | 路由总数、后端在线数、累计请求、累计错误、平均耗时                                  |
-| 流量图  | 最近 60 秒每秒请求量的柱状图,悬停看具体时间与次数                                |
-| 路由表  | 状态灯(在线/离线 + 悬停显示探测延迟)、名称与匹配路径、目标地址、请求数、错误数、最近状态码、耗时、最近访问时间 |
-| 交互   | 搜索框实时过滤(名称/路径/端口/来源)、点表头排序、行悬停高亮                           |
-| 适配   | 深色/浅色自动跟随系统;手机窄屏自动切成卡片式,不用横向滑                              |
+| `entry` | 行为 |
+|---|---|
+| `true` | 一定出现，同一后端标几条就出几张 |
+| `false` | 一定不出现 |
+| 留空 | 自动补一个；已被标「显示」的页面不再重复出卡 |
 
-### 接口(可给脚本用)
+自动挑选时会跳过 `/api`、`/ws`、`/files`、`/login` 这类接口路径，取 `matchPath` 最短的。
 
-```
-GET  /__web-mount__?format=json       # 完整状态(需已登录;或带 header x-wm-token: <口令>)
-POST /__web-mount__/reload            # 重载配置
-POST /__web-mount__/reset             # 清空统计
-GET  /__web-mount__/logout            # 退出登录
-```
-
-> 口令校验:登录页表单提交 → 服务端下发 `wm_auth` Cookie(值是口令的 SHA-256,`HttpOnly`、7 天)。口令为空时以上接口不需要鉴权。  
-> 连续输错 5 次会锁定该 IP 60 秒。
-
-### 安全提醒
-
-状态页会暴露**本机内部端口和路径**。如果 Yunzai 的 HTTP 端口映射到了公网,请务必设置 `statusToken`;或者把「状态页」开关关掉(`statusPage: false`)。
+> 同端口想多出一张卡（比如早柚日报），**最省事的做法就是给它标「显示」**，同端口的面板不会因此被挤掉。
 
 ---
 
-## 🧩 锅巴面板扩展页面(guoba-plugin-next)
+## 子路径面板（以青龙为例）
 
-如果你用的是 [guoba-plugin-next](https://gitee.com/longhengmu/guoba-plugin-next),插件会自动在面板侧边栏「**扩展页面**」下注册一个 **端口挂载** 页面 —— 不用再单独开浏览器标签,也不用记 `2536/__web-mount__`。
+umi/react 打包的面板默认按根路径取资源，直接挂到 `/qinglong` 会白屏，控制台报 `MIME type ('text/html')`。要两步：
 
-- **零配置**:锅巴启动时扫描 `plugins/*/guoba/`,插件自带的 `guoba/index.js` 已注册好页面和接口。
-- **不用输口令**:面板页面走锅巴自己的登录鉴权;`statusToken` 只作用于独立的 `/__web-mount__`。
-- **同一份数据**:面板页与独立状态页共用 `lib/status.js` 的运行时统计,两边看到的内容一致。
-- **功能一致**:刷新、自动刷新、搜索、排序、**重载配置**、**清空统计**。
-- **跟随主题**:面板切换深浅色时,页面会自动跟着切。
+1. **让面板知道自己的基础路径**：青龙设环境变量 `QlBaseUrl=/qinglong/`（必须前后都有 `/`）；
+2. **路由用剥离前缀**：`matchPath=/qinglong` + `prefix=/`。
 
-接口挂在 `/guoba/api/custom/web-mount` 下(自动带锅巴的登录鉴权):
+因为 `QlBaseUrl` 只影响前端，后端的静态资源与接口仍在根目录，必须剥掉前缀才对得上。`prefix` 误填成 `/qinglong`（原样透传）会白屏跳 `/login`。
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/data` | 路由列表、后端在线状态、请求统计 |
-| `POST` | `/reload` | 重载 `config.json` |
-| `POST` | `/reset` | 清空请求统计 |
+面板**没有**基础路径配置项时，子路径代理基本无解，改用子域名反代。
 
-目录结构:
+---
+
+## 在 Termux / Android 上
+
+插件没有平台相关代码，但手机上这几点容易踩：
+
+| 现象 | 原因与处理 |
+|---|---|
+| 配置「整个消失」 | 进程被系统回收时可能写坏文件。现在是原子写（临时文件 + rename），坏文件备份为 `config.json.broken` |
+| 某个服务转圈很久 | 无请求体的 POST 曾挂在超时，现已立即 `end()` |
+| 状态页刷新发热 | 探测已按 `host:port` 去重，不再每条路由建一次连接 |
+| 全填 `127.0.0.1` 却连不上 | chroot 容器与宿主 Termux 不是同一网络命名空间。把 `host` 改成宿主机局域网 IP，或让服务监听 `0.0.0.0` |
+
+---
+
+## 常见问题
+
+**面板挂到子路径后白屏 / 跳回 `/login`？**
+见上节，两步：设基础路径 + `prefix=/` 剥离。
+
+**`/api` 被多个服务共用会抢吗？**
+会。给 `/api` 建多条规则，用 `matchReferer` 区分；或者直接在页面路由上开「自动 /api」，插件会按页面路径生成。
+
+**陌生网页能访问我的后端吗？**
+默认不能：来源必须是同源，且只比对 pathname（`?q=/zy` 这种查询串不会误命中）。不要随手关 `refererSameOriginOnly`。
+
+**502 Bad Gateway？**
+插件连不上后端。看状态页该路由的指示灯；确认端口在监听；后端在容器/别的设备里时 `host` 不能填 `127.0.0.1`。响应体和控制台日志都会带上路由名与实际转发的路径。
+
+**配了 `matchPath: "/"` 兜底，Yunzai 自己的页面全被代理走了？**
+`/` 会匹配所有路径，包括 Yunzai 自身的。不要轻易用 `/` 兜底。
+
+**忘了状态页口令？**
+就存在 `config/config.json` 的 `statusToken` 里，直接看文件，或在锅巴面板重置。
+
+---
+
+## 开发
 
 ```
 plugins/web-mount/
-├── index.js            # 插件入口:生命周期 / 注册监听 / 热重载 / 启动日志
-├── guoba.support.js    # 锅巴「插件配置」表单(左侧菜单里的那套)
-├── guoba/              # 锅巴扩展页面(本仓库自带)
-│   ├── index.js        #   init(ctx) 注册页面与接口
-│   ├── dashboard.html
-│   ├── dashboard.css
-│   └── dashboard.js
+├── index.js            # 插件入口：注册监听 / 热重载 / 启动日志
+├── guoba.support.js    # 锅巴「插件配置」表单
+├── guoba/              # 锅巴扩展页面（状态页共用这同一套 html/css/js）
 ├── lib/
-│   ├── route.js        # 路径与路由匹配(纯函数,可单测)
+│   ├── route.js        # 路径与匹配（纯函数，可单测）
 │   ├── proxy.js        # HTTP / WebSocket 反向代理
-│   ├── status-page.js  # 状态页:鉴权 / 登录 / 配置接口 / 渲染
-│   ├── config.js       # config.json 的唯一读写入口(归一化/迁移/原子写)
-│   └── status.js       # 运行状态与统计(两个页面共用)
-├── config/
-│   ├── default_config.json   # 默认模板(入库)
-│   └── config.json           # 实际配置(本地,已 gitignore)
-├── scripts/            # 发布/初始化辅助脚本
-└── test/               # 自检脚本(node test/run-all.mjs)
+│   ├── status-page.js  # 状态页：鉴权 / 登录 / 配置接口 / 渲染
+│   ├── config.js       # config.json 的唯一读写入口（归一化 / 迁移 / 原子写）
+│   └── status.js       # 运行状态与统计
+├── config/             # default_config.json 入库，config.json 本地
+└── test/               # 自检
 ```
 
-> 分工原则:**只改转发行为就动 `lib/proxy.js`,只改匹配规则就动 `lib/route.js`**,两者都不需要碰插件生命周期。
-
-
-> 只在面板里看的话,可以把「状态页」开关关掉(`statusPage: false`),少一个对外入口,照样能在锅巴里查看。
-> 调试:改 `guoba/` 下的 html/css/js 刷新浏览器即可;改了 `guoba/index.js`(页面描述或接口)需要在页面右上角点「**重新扫描**」,不用重启 Bot。
-
----
-
-## 🔗 服务入口(在面板内打开其它服务)
-
-状态页和锅巴面板页面上都有「服务入口」区:把**每台后端聚合成一个卡片**,点一下就在当前页用 iframe 打开,不用另开标签、不用记端口。
-
-### 可行性
-
-可行,因为挂载的服务与面板**同源**(都在 Yunzai 的 HTTP 端口下)。但直接 iframe 会被两类响应头拦下,插件在转发时统一处理:
-
-| 问题 | 处理 |
-|------|------|
-| 后端返回 `X-Frame-Options: DENY/SAMEORIGIN` | 转发时删除该响应头 |
-| 后端 CSP 里带 `frame-ancestors 'none'` | 从 CSP 中移除该指令,其余指令保留 |
-| 同源 Cookie | 同源请求会自动带上,无需额外处理 |
-| 绝对路径资源 | 已由路由表解决(每个绝对路径单独建一条) |
-
-> 这两项只在「允许嵌入」开启时生效(`allowEmbed`,默认开)。关掉后恢复原样透传,适合你不想让页面被任何站点嵌套的场景。
-
-### 入口是怎么挑的
-
-**一个端口上可能挂着多个不同的页面。** 比如 GsCore 自己在 `8765` 上跑 `/zy`,它某个插件的 webui 也挂在同一个 `8765` 的 `/daily-analyisis-gscore` 下 —— 端口相同,但是两个独立页面。所以判断「是不是同一个页面」看的是**目标内前缀(`prefix`)**,不是端口。
-
-「导航入口」三态:
-
-| 取值 | 行为 |
-|---|---|
-| **显示** | 一定出现。同一台后端标了几条就显示几张卡片 |
-| **不显示** | 一定不出现 |
-| **自动**(留空) | 自动补;但如果这个页面已经有一条被标「显示」,就不重复出卡 |
-
-自动补的规则:
-
-1. 先按「页面」去重 —— 目标内前缀相同(`/zy`(prefix `/app`)与 `/app`(prefix `/app`) 是同一个应用)只留一张卡片;
-2. 排除接口/登录类路径:`/api`、`/ws`、`/socket`、`/files`、`/static`、`/assets`、`/login`、`/auth` 等;
-3. 剩下的取 `matchPath` 最短的那条。
-
-**关于 `prefix: "/"`(剥离前缀)的路由**:这个值不携带页面信息 —— 青龙、NapCat、agents 全都填 `/`,但它们的页面各不相同。所以:
-
-- 同一端口上,**具名前缀**的页面(如 `/webui` 的 `prefix=/webui`)与 **`prefix=/`** 的页面(如 `/ncqq`)会被正确识别成两个页面,各出一张卡;
-- 同一端口上有多条 `prefix=/` 时,默认只出一张卡(它们都指向后端根,无法区分是同一页面的多个路径还是多个页面)。真想让它们都出现,给每条标「显示」即可。
-
-同一个 6099 上的例子:
-
-| 配置 | 结果 |
-|---|---|
-| `/webui`、`/files`、`/ncqq`(prefix `/`),都不标 | WebUI 与 入口 各一张(`/files` 是接口类路径被排除) |
-| `/webui`、`/ncqq` 都标「显示」 | 同样两张,顺序/命名按你的配置 |
-| 青龙 `/qinglong` + agents `/agents`(不同端口,都是 prefix `/`) | 各一张 |
-
-> 所以像「早柚日报」这种同端口不同页面的服务,**最省事的做法就是给它标一个「显示」**;同端口的面板不会因此被挤掉。
->
-> `ws: true` 只表示「这条路由还要转发 WebSocket」,**不影响**它当页面入口 —— NapCat 的 `/webui` 就是这种情况。
-> 路由表里会标绿色「入口」小标签,标「不显示」的会标灰色「不进导航」,一眼能看出哪条生效了。
-
-### 打开方式
-
-点卡片 → 页内全屏 iframe,顶部有「新标签打开」和「关闭」(`Esc` 也能关)。打开期间会**暂停自动刷新**,避免打断页面里的操作。
-
----
-
-## 🛠 页面内配置
-
-不想开锅巴也能改配置:状态页和面板页右上角有「配置」按钮,右侧滑出抽屉。
-
-### 能改什么
-
-**全局设置**
-
-| 项 | 说明 |
-|---|---|
-| 配置热重载 | 改完是否自动生效 |
-| 调试日志 | 每次转发打印一行(方法/URL/状态码/耗时) |
-| 状态页 | 是否注册 `/__web-mount__` |
-| 允许嵌入 | 是否剥离防嵌套响应头 |
-| 启用配置区 | 关掉后这个抽屉只读 |
-| 转发超时 | 毫秒 |
-| 状态页口令 | 改完后下次进入需重新登录 |
-
-**路由**(逐条卡片式编辑,可新增/删除)
-
-`启用`、`名称`、`matchPath`、`matchReferer`、`matchMethod`、`host`、`port`、`prefix`、`导航入口`、`WebSocket` —— 与 `config.json` 的字段一一对应。
-
-### 怎么交互
-
-- 打开抽屉即读取当前 `config.json`,没点保存的改动不会提交;
-- 每条路由是一张卡片,字段直接输入;
-- 「+ 新增一条」在末尾追加空白路由并聚焦到「匹配路径」;
-- 「还原」丢弃改动、重新读取文件;
-- 「保存并应用」提交。
-
-### 怎么生效
-
-保存时后端会:①校验并归一化(端口补默认值、方法转大写、路径补 `/`、过滤空行)→ ②**合并写回** `config.json`(只覆盖提交的字段,其它顶层字段原样保留)→ ③立即重载路由 → ④返回「已保存并生效,N 条路由」。
-
-所以**不需要重启,也不用等 2 秒热重载**。保存后页面上的路由表与「服务入口」会随即刷新。
-
-> 同一份文件锅巴面板也在写,两边谁最后保存谁生效;保存时会保留彼此的字段,不会把对方的设置抹掉。
-
-### 权限(重要)
-
-| 环境 | 能否保存 |
-|------|---------|
-| 锅巴面板内 | 可以(走锅巴自己的登录鉴权) |
-| 独立状态页 + **已设口令** | 可以(登录后) |
-| 独立状态页 + **未设口令** | 只读 —— 此时页面本身就是公开的,不能让任何人改配置 |
-
-未设口令时抽屉里会显示提示、保存按钮禁用。要开启编辑,先去锅巴面板设一个「状态页口令」。
-
----
-
-## 📱 在 Termux / Android(chroot 容器)上运行
-
-插件本身没有平台相关代码,但在手机上跑有几个实际差异值得知道:
-
-| 现象 | 原因 | 处理 |
-|---|---|---|
-| 编辑配置后整个配置"消失" | 手机上进程随时可能被系统回收,`writeFileSync` 覆盖到一半被杀会留下半截 JSON | **v1.5.3 起已改为原子写**(临时文件 + rename),坏文件会备份成 `config.json.broken` 而不是直接丢掉 |
-| 点某个服务"要转圈很久才出来" | 没有请求体的 POST 之前会挂在 `proxyTimeout`(默认 30 秒) | v1.5.3 起无 body 的请求立即 `end()` |
-| 状态页刷新时手机发热/耗电 | 每条路由各建一次 TCP 探测 | v1.5.3 起按 `host:port` 去重探测 |
-| 后端全填 `127.0.0.1` 但连不上 | 容器(chroot/arch)与宿主机 Termux 的 `127.0.0.1` 不是同一个网络命名空间 | 把 `host` 改成宿主机的局域网 IP(如 `192.168.x.x`),或让服务监听 `0.0.0.0` 并用宿主机 IP 访问 |
-
-自检(可选,只会用临时目录,不改你的配置):
+分工原则：**改转发行为只动 `lib/proxy.js`，改匹配规则只动 `lib/route.js`**，都不需要碰插件生命周期。
 
 ```bash
-cd plugins/web-mount
-node test/run-all.mjs     # 或 npm test
+npm install     # 装 eslint + prettier（只在开发时需要，插件运行不依赖）
+npm test        # 全部自检：路由 / 兼容 / 原子写 / 端到端 / 并发（用临时目录，不碰你的配置）
+npm run lint    # eslint
+npm run format  # prettier 格式化
+npm run check   # lint + test，提交前跑这个
 ```
 
----
-
-## 🩺 常见问题(FAQ)
-**Q: 面板挂到子路径后白屏,控制台报 MIME type ('text/html') 不是样式表/脚本?**  
-A: 面板前端默认按**根路径**取资源(`/umi.xxx.js`、`/api/...`),挂到 `/qinglong` 下就不匹配了。**两步**:①给面板设基础路径 —— 青龙用 `QlBaseUrl=/qinglong/`(让前端路由与接口都带该前缀);②插件这条路由用 **`prefix=/` 剥离前缀**,转发到后端根目录。详见「新增一个服务」一节。
-
-**Q: 访问 `/qinglong` 提示登录失效,跳转 `/login` 后跳到仓库页(如 gitee/Yunzai)/ 白屏?**  
-A: 说明面板没做子路径适配(或插件前缀配错)。正解:①青龙设 `QlBaseUrl=/qinglong/`;②插件路由 `matchPath=/qinglong` + **`prefix=/`**。改完后前端跳转会变成 `/qinglong/login`,经插件剥离后到 `:5700/login`。**注意**:若 `prefix` 误填成 `/qinglong`(透传),`/qinglong/api/env.js` 在后端不存在 → 前端拿不到 base → 又跳回 `/login` 白屏。
-
-**Q: `/api` 是多个服务共用的,会互相抢吗?**  
-A: 会。给 `/api` 建多条规则,每条用 `matchReferer` 限定来源;顺序即优先级,默认兜底规则放最后。若都不匹配会放行给 Yunzai(可再配一条来源留空的 `/api` 兜底)。
-
-**Q: 配了 `matchReferer`,但陌生网页也能访问我的后端?**  
-A: v1.5.3 之前是子串匹配 —— 任意网页只要带 `Referer: https://x/zy` 就能命中 `/zy` 那条分流。现在默认只认同源来源(`refererSameOriginOnly: true`),且只比对 pathname(不会被 `?q=/zy` 这类查询串误命中)。如果确实需要跨站来源,才把它关掉。
-
-**Q: 访问某个路径返回 `502 Bad Gateway`?**  
-A: 插件连不上目标后端。①打开 `/__web-mount__` 看该路由的指示灯是不是红的;②确认后端端口确实在监听(`ss -tlnp` 里能看到该端口);③若后端在容器或其他设备里,`host` 不能填 `127.0.0.1`。错误信息会带路由名和实际转发的路径,控制台也有一条 `转发失败 ...` 日志(同一路由 10 秒内只记一条)。
-
-**Q: 保存配置后没生效?**  
-A: 默认 2 秒自动热重载,稍等一下刷新页面即可;若关掉了「配置热重载」,需要重启 Yunzai。注意热重载监听的是 `plugins/web-mount/config/config.json` 的修改时间。
-
-**Q: 我配了 `matchPath: "/"` 兜底,结果 Yunzai 自己的页面全被代理走了?**  
-A: `/` 会匹配所有路径,包括 Yunzai 自身的路由。**不要轻易用 `/` 兜底**;如果确实需要,请把更具体的路径都配上(最长路径优先,不会被 `/` 抢走),并清楚它会接管所有未匹配请求。
-
-**Q: WebSocket 支持吗?**  
-A: 支持。需要 WS 的路由把 `ws` 设为 `true`(如 NapCat 实时日志 `/ws`);连接关闭时会同时清理两端。
-
-**Q: POST/PUT 到后端的请求体是空的?**  
-A: 旧版本存在这个问题(Yunzai 的 body-parser 已经把请求流读完,再 `pipe` 只会拿到空流)。当前版本会判断 `req._body` / `readableEnded`,已解析的请求用 `req.body` 重新序列化后转发,不会再丢。
-
-**Q: 口令明明输入正确,却提示「口令不正确」?**
-A: **v1.3.2 之前有此 bug**:旧代码用 `req._body` 判断请求体是否已被解析,而部分 Yunzai 版本只设置 `req.body` 不设 `_body`,导致表单内容被当成"未解析"去读流、结果读到空串。现已改为优先使用 `req.body`。升级后仍不行,请把「调试日志」打开,登录一次后看控制台 `[web-mount] 状态页登录：body N 字节，取到 X 字符，期望 Y 字符` 这一行——`取到 0 字符` 说明请求体没读到,`X≠Y` 说明两边的口令确实不一致(去 `config/config.json` 看 `statusToken` 实际值)。
-
-**Q: 忘了状态页口令?**  
-A: 口令是明文存在 `config/config.json` 的 `statusToken` 里,直接打开文件看,或在锅巴面板「状态页口令」里重置。若已登录想换设备登录,访问 `/__web-mount__/logout` 退出后重新输入。
-
-**Q: 状态页显示某条路由是红灯(离线)?**  
-A: 插件无法在 700ms 内连通 `host:port`。常见原因:后端没启动、端口填错、后端只监听 `127.0.0.1` 而插件跑在容器里(此时要把 `host` 改成宿主内网 IP)。红灯不影响已建立连接的请求,但新请求会 502。
+改了 `guoba/` 下的 html/css/js，刷新浏览器即可；改了 `guoba/index.js`（页面描述或接口）在锅巴里点「重新扫描」。
 
 ---
 
-## 📄 许可证
+## 更新
 
-[MIT](LICENSE) — 自由使用、修改与分发。
+- **v1.5.5**：新增「自动 /api」，页面路由勾一下即自动生成 `/api` 分流；锅巴配置表单与配置模块合并为一份字段定义；引入 eslint + prettier 并全量格式化；精简本文档。
+- **v1.5.4**：`index.js` 837 行拆成入口 + `route`/`proxy`/`status-page` 三个模块，行为不变。
+- **v1.5.3**：修入口丢卡、来源可伪造、迁移丢路径、端口静默丢弃，配置改原子写。
+- 更早的改动见 `git log`。
 
-## 🙏 致谢
+## 许可证
 
-- [Yunzai-Bot v3](https://github.com/TimeRainStarSky/Yunzai)
-- Deepseek-V4.1-Flash
-- 锅巴面板(guoba)社区
+[MIT](LICENSE)
+
+## 致谢
+
+[Yunzai-Bot v3](https://github.com/TimeRainStarSky/Yunzai) · 锅巴面板社区
