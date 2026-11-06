@@ -241,6 +241,8 @@
       if (r.matchReferer) tags += '<span class="tag">来源 ' + esc(r.matchReferer) + '</span>';
       if (r.matchMethod) tags += '<span class="tag">' + esc(r.matchMethod) + '</span>';
       if (r.ws) tags += '<span class="tag ws">WS</span>';
+      if (r.entry === true) tags += '<span class="tag entry">入口</span>';
+      else if (r.entry === false) tags += '<span class="tag off">不进导航</span>';
       var stCls = r.lastStatus >= 400 ? 'st-err' : (r.lastStatus ? 'st-ok' : '');
       var target = esc(r.host) + ':' + esc(r.port) +
         (r.prefix && r.prefix !== '/' ? '<span style="opacity:.6">' + esc(r.prefix) + '</span>' : '');

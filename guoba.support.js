@@ -142,7 +142,7 @@ export function supportGuoba() {
                     { label: '不显示', value: 'hide' },
                   ],
                 },
-                bottomHelpMessage: '同一端口有多条路由时，标「显示」的那条作为页面入口',
+                bottomHelpMessage: '同一端口上可能挂着多个不同页面（如 GsCore 的 /zy 与它插件页 /daily-analyisis-gscore）。给每个页面各标一条「显示」即可，同端口的面板不会因此消失；留空则自动挑一个。',
               },
               {
                 field: 'ws',
