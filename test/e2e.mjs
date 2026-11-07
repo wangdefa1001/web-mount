@@ -725,6 +725,70 @@ plugin.reloadConfig(true)
   srv.close()
 }
 
+/* ---------- 20. 状态页前端：结构完整性（防改坏） ---------- *
+ * guoba/ 下这三个文件是手工维护的前端，没有构建步骤，写错了只有在浏览器里
+ * 才看得出来。这里做静态自检：元素 id 与 JS 引用对得上、样式表里没有引用
+ * 不存在的类名、毛玻璃只用在浮层上。
+ */
+{
+  const gdir = path.join(PLUGIN, 'guoba')
+  const html = fs.readFileSync(path.join(gdir, 'dashboard.html'), 'utf8')
+  const css = fs.readFileSync(path.join(gdir, 'dashboard.css'), 'utf8')
+  const src = fs.readFileSync(path.join(gdir, 'dashboard.js'), 'utf8')
+
+  // JS 里用 $('xxx') 取的每个 id，HTML 里都得存在，否则运行时直接 null.xxx。
+  // 例外：JS 自己用 innerHTML 拼出来、随后立刻 getElementById 的动态元素。
+  const DYN_IDS = new Set(['empty-add'])
+  const usedIds = [...new Set([...src.matchAll(/\$\('([a-zA-Z0-9_-]+)'\)/g)].map(m => m[1]))]
+  const htmlIds = new Set([...html.matchAll(/id="([^"]+)"/g)].map(m => m[1]))
+  const missingIds = usedIds.filter(id => !htmlIds.has(id) && !DYN_IDS.has(id))
+  check('状态页：JS 引用的 id 在 HTML 里都存在', missingIds.length === 0, missingIds, [])
+
+  // 反方向：HTML 里定义了、但 JS 与 CSS 都不引用的 id（多半是删代码时忘了清结构）。
+  // 纯展示用的静态文案（如 sites-hint）也允许留着，但仍受此检查约束 ——
+  // 一旦它彻底没人用，就该删掉。
+  const jsMentions = id => src.includes("'" + id + "'") || src.includes('"' + id + '"')
+  const orphanIds = [...htmlIds].filter(id => !jsMentions(id) && !css.includes('#' + id))
+  check('状态页：HTML 里没有彻底没人用的 id', orphanIds.length === 0, orphanIds, [])
+
+  // 关键浮层必须真的带 backdrop-filter
+  const glassBlocks = ['.top', '.drawer-panel', '#toast', '.confirm']
+  const noGlass = glassBlocks.filter(sel => {
+    const i = css.indexOf('\n' + sel + ' {')
+    if (i < 0) return true
+    const block = css.slice(i, css.indexOf('}', i))
+    return !/backdrop-filter:\s*blur/.test(block)
+  })
+  check('状态页：关键浮层都有毛玻璃', noGlass.length === 0, noGlass, [])
+
+  // 反过来：内容类容器不该开 backdrop-filter（大面积模糊会掉帧）
+  const mustNotBlur = ['.panel {', '.card {', '.rt {']
+  const wronglyBlurred = mustNotBlur.filter(sel => {
+    const i = css.indexOf('\n' + sel)
+    if (i < 0) return false
+    const block = css.slice(i, css.indexOf('}', i))
+    return /backdrop-filter:/.test(block)
+  })
+  check('状态页：内容容器没有滥用毛玻璃', wronglyBlurred.length === 0, wronglyBlurred, [])
+
+  // 深浅色两套都要定义毛玻璃底色，否则某一模式会糊成半透明
+  const glassBgCount = (css.match(/--glass-bg:/g) || []).length
+  check('状态页：深浅两套主题都定义了毛玻璃底色', glassBgCount >= 2, glassBgCount, '>=2')
+
+  // 不支持 backdrop-filter 时必须有降级（否则文字糊在背景上读不清）
+  check('状态页：有 @supports 降级分支', /@supports not \(\(backdrop-filter/.test(css), false, true)
+
+  // 前端脚本语法
+  let syntaxOk = true
+  try {
+    new Function(src)
+  } catch (e) {
+    syntaxOk = false
+    check('状态页：dashboard.js 语法错误 -> ' + e.message, false, e.message, 'no error')
+  }
+  if (syntaxOk) check('状态页：dashboard.js 语法正确', true, true, true)
+}
+
 /* ---------- 收尾 ---------- */
 server.close()
 for (const s of Object.values(BACKENDS))

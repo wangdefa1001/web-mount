@@ -18,12 +18,21 @@
       </div>
     </div>
     <div class="tools">
-      <label class="tgl"><input type="checkbox" id="auto" checked><i></i><span>自动刷新</span></label>
-      <button class="btn" id="btn-refresh">刷新</button>
-      <button class="btn" id="btn-config">配置</button>
-      <button class="btn" id="btn-reload">重载配置</button>
-      <button class="btn" id="btn-reset">清空统计</button>
-      <a class="btn" id="btn-logout" href="#" title="退出登录">退出</a>
+      <label class="tgl" title="每 3 秒自动刷新状态">
+        <input type="checkbox" id="auto" checked><i></i><span>自动刷新</span>
+      </label>
+      <button class="btn icon" id="btn-refresh" title="立即刷新（快捷键 R）" aria-label="刷新">
+        <span class="ico">⟳</span>
+      </button>
+      <button class="btn icon" id="btn-more" title="更多操作" aria-label="更多操作" aria-expanded="false">
+        <span class="ico">⋯</span>
+      </button>
+      <button class="btn primary" id="btn-config" title="编辑全局设置与路由">配置</button>
+      <div class="menu" id="menu" hidden>
+        <button class="mi" id="btn-reload"><span>重载配置</span><em>重新读取 config.json，不重启</em></button>
+        <button class="mi" id="btn-reset"><span>清空统计</span><em>请求数、错误数、流量图归零</em></button>
+        <a class="mi" id="btn-logout" href="#"><span>退出登录</span><em>清除本机登录状态</em></a>
+      </div>
     </div>
   </header>
 
@@ -32,7 +41,7 @@
   <section class="panel" id="sites-panel">
     <div class="panel-hd">
       <span>服务入口</span>
-      <span class="muted" id="sites-hint">点击在当前页打开</span>
+      <span class="muted">点击在当前页打开</span>
     </div>
     <div class="sites" id="sites"></div>
   </section>
@@ -46,7 +55,7 @@
   <section class="panel">
     <div class="panel-hd">
       <span>路由 <b id="cnt">0</b></span>
-      <input class="search" id="q" placeholder="搜索 名称 / 路径 / 端口">
+      <input class="search" id="q" placeholder="搜索 名称 / 路径 / 端口" type="search">
     </div>
     <div class="tw">
       <table>
@@ -66,10 +75,19 @@
 
   <footer class="foot">
     <span id="foot-info"></span>
-    <span><a href="javascript:location.reload()">刷新页面</a></span>
+    <span class="foot-hint">快捷键：<kbd>R</kbd> 刷新 · <kbd>F</kbd> 搜索 · <kbd>G</kbd> 配置 · <kbd>Esc</kbd> 关闭</span>
   </footer>
 </div>
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<!-- 确认条：替代原生 confirm（原生会阻塞渲染与自动刷新，样式也不可控） -->
+<div class="confirm" id="confirm" hidden role="alertdialog" aria-live="assertive">
+  <span class="cf-t"></span>
+  <span class="cf-b">
+    <button class="btn" id="cf-no">取消</button>
+    <button class="btn primary" id="cf-ok">确定</button>
+  </span>
+</div>
 
 <!-- 页面查看器：在面板内打开已挂载的服务 -->
 <div class="viewer" id="viewer" hidden>
@@ -86,32 +104,60 @@
 <!-- 配置抽屉 -->
 <div class="drawer" id="drawer" hidden>
   <div class="drawer-mask" id="drawer-mask"></div>
-  <aside class="drawer-panel">
+  <aside class="drawer-panel" role="dialog" aria-modal="true" aria-label="配置">
     <div class="drawer-hd">
-      <span>配置</span>
-      <button class="btn" id="cfg-close">关闭</button>
+      <div class="dh-t">
+        <span>配置</span>
+        <span class="dh-s" id="dh-sub">全局设置与路由</span>
+      </div>
+      <button class="btn icon" id="cfg-close" title="关闭（Esc）" aria-label="关闭">
+        <span class="ico">✕</span>
+      </button>
     </div>
+
+    <div class="drawer-tabs" role="tablist">
+      <button class="tab on" role="tab" data-tab="routes" aria-selected="true">路由 <b id="tab-cnt">0</b></button>
+      <button class="tab" role="tab" data-tab="settings" aria-selected="false">全局设置</button>
+    </div>
+
     <div class="drawer-body">
       <div class="cfg-note" id="cfg-note" hidden></div>
 
-      <h4>全局设置</h4>
-      <div class="cfg-grid">
-        <label class="field"><span>配置热重载</span><input type="checkbox" id="cfg-autoReload"></label>
-        <label class="field"><span>调试日志</span><input type="checkbox" id="cfg-debug"></label>
-        <label class="field"><span>状态页</span><input type="checkbox" id="cfg-statusPage"></label>
-        <label class="field"><span>允许嵌入</span><input type="checkbox" id="cfg-allowEmbed"></label>
-        <label class="field"><span>启用配置区</span><input type="checkbox" id="cfg-configEditor"></label>
-        <label class="field"><span>来源仅限同源</span><input type="checkbox" id="cfg-refererSameOriginOnly"></label>
-        <label class="field"><span>补尾斜杠跳转</span><input type="checkbox" id="cfg-trailingSlashRedirect"></label>
-        <label class="field"><span>静音框架 HTTP 日志</span><input type="checkbox" id="cfg-quietProxyLog"></label>
-        <label class="field"><span>转发超时 (ms)</span><input type="number" id="cfg-proxyTimeout" min="1000" max="600000" step="1000"></label>
-        <label class="field full"><span>状态页口令</span><input type="password" id="cfg-statusToken" placeholder="留空 = 不需要口令（此时独立页不可改配置）" autocomplete="new-password"></label>
+      <div class="tabpane" id="pane-routes">
+        <div class="pane-bar">
+          <p class="cfg-tip">
+            勾选「自动 /api」后，该页面里以绝对路径 <code>/api/...</code> 发出的请求会自动分到同一后端，不必再手工加一条 <code>/api</code> 路由。
+          </p>
+          <button class="btn sm primary" id="cfg-add">+ 新增路由</button>
+        </div>
+        <div class="cfg-routes" id="cfg-routes"></div>
       </div>
 
-      <h4>路由 <button class="btn sm" id="cfg-add">+ 新增一条</button></h4>
-      <p class="cfg-tip">勾选「自动 /api」后，这个页面前的 <code>/api/...</code> 请求会自动分到同一后端（来源按该路径识别），不必再手工添加一条 <code>/api</code> 路由。</p>
-      <div class="cfg-routes" id="cfg-routes"></div>
+      <div class="tabpane" id="pane-settings" hidden>
+        <h4>运行</h4>
+        <div class="cfg-grid">
+          <label class="field"><span>配置热重载<em>改 config.json 后约 2 秒生效</em></span><input type="checkbox" id="cfg-autoReload"></label>
+          <label class="field"><span>调试日志<em>每次转发打印方法、路径、状态码、耗时</em></span><input type="checkbox" id="cfg-debug"></label>
+          <label class="field"><span>转发超时 (ms)<em>后端超时无响应则断开</em></span><input type="number" id="cfg-proxyTimeout" min="1000" max="600000" step="1000"></label>
+        </div>
+
+        <h4>访问与安全</h4>
+        <div class="cfg-grid">
+          <label class="field full"><span>状态页口令<em>设了才允许在本页改配置；公网暴露时必设</em></span><input type="password" id="cfg-statusToken" placeholder="留空 = 不校验" autocomplete="new-password"></label>
+          <label class="field"><span>来源仅限同源<em>防陌生网页伪造 Referer 打你的后端</em></span><input type="checkbox" id="cfg-refererSameOriginOnly"></label>
+          <label class="field"><span>静音框架 HTTP 日志<em>避免请求头里的 Token 落进日志</em></span><input type="checkbox" id="cfg-quietProxyLog"></label>
+          <label class="field"><span>启用本页配置区<em>关掉后只能查看不能保存</em></span><input type="checkbox" id="cfg-configEditor"></label>
+          <label class="field"><span>开启状态页<em>关闭后 /__web-mount__ 不可访问</em></span><input type="checkbox" id="cfg-statusPage"></label>
+        </div>
+
+        <h4>转发行为</h4>
+        <div class="cfg-grid">
+          <label class="field"><span>允许嵌入<em>剥掉后端的 X-Frame-Options</em></span><input type="checkbox" id="cfg-allowEmbed"></label>
+          <label class="field"><span>补尾斜杠跳转<em>/memes 302 到 /memes/，相对资源才解析对</em></span><input type="checkbox" id="cfg-trailingSlashRedirect"></label>
+        </div>
+      </div>
     </div>
+
     <div class="drawer-ft">
       <span class="muted" id="cfg-status"></span>
       <div class="ft-btns">

@@ -28,7 +28,17 @@
   var S = window.__WM__ || { routes: [], totals: {}, traffic: [], settings: {}, services: [] };
   var sortKey = '', sortDir = 1, kw = '', timer = null;
 
+  // 配置抽屉的状态：打开时的原始快照，用来判断「有没有未保存的改动」
+  var cfgSnap = '';
+  var cfgTab = 'routes';
+
   function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) {
+    var d = document.createElement(tag);
+    if (cls) d.className = cls;
+    if (text != null) d.textContent = text;
+    return d;
+  }
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -46,6 +56,18 @@
     var d = new Date(ts);
     return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
   }
+
+  /* 相对时间：状态页每 3 秒刷新，绝对时间戳（10-11 03:12:45）每次都要重新读一遍；
+     「12 秒前」一眼就知道是不是刚发生过的事。超过一天才退回绝对时间。 */
+  function ago(ts) {
+    if (!ts) return '—';
+    var s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (s < 5) return '刚刚';
+    if (s < 60) return s + ' 秒前';
+    if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
+    if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
+    return time(ts);
+  }
   function dur(ms) {
     if (!ms) return '—';
     if (ms < 1000) return ms + 'ms';
@@ -61,12 +83,40 @@
     if (m) return m + '分' + s + '秒';
     return s + '秒';
   }
-  function toast(msg) {
+
+  var toastTimer = null;
+  function toast(msg, kind) {
     var t = $('toast');
     if (!t) return;
-    t.textContent = msg; t.classList.add('show');
-    clearTimeout(t._h);
-    t._h = setTimeout(function () { t.classList.remove('show'); }, 2400);
+    t.textContent = msg;
+    t.classList.toggle('err', kind === 'err');
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove('show'); }, kind === 'err' ? 3600 : 2400);
+  }
+
+  /* ================================================================== *
+   * 确认条：替代原生 confirm()
+   *
+   * 原生 confirm 会阻塞整个 JS 线程 —— 自动刷新、Toast 全部卡住，而且
+   * 样式无法控制、在 iframe 里体验更差。这里用页面内浮层实现，返回 Promise。
+   * ================================================================== */
+  var cfResolve = null;
+  function confirmBox(text) {
+    var box = $('confirm');
+    if (!box) return Promise.resolve(true);
+    box.querySelector('.cf-t').textContent = text;
+    box.hidden = false;
+    return new Promise(function (resolve) { cfResolve = resolve; });
+  }
+  function settleConfirm(ok) {
+    var box = $('confirm');
+    if (box) box.hidden = true;
+    if (cfResolve) {
+      var r = cfResolve;
+      cfResolve = null;
+      r(ok);
+    }
   }
 
   /* ---------- 嵌入面板时的适配 ---------- */
@@ -139,47 +189,65 @@
     return fetchJson(PATH + '?format=json', { credentials: 'same-origin' });
   }
 
-  /* ---------- 渲染 ---------- */
+  /* ================================================================== *
+   * 渲染
+   * ================================================================== */
+
+  /* 概览卡片。顺序按"想先看到什么"排：能不能用(在线) > 有多少路(路由) >
+     跑了多少(请求) > 有没有问题(错误) > 快不快(耗时)。 */
   function renderCards(t) {
+    var offline = (t.routes || 0) - (t.online || 0);
     var items = [
-      ['路由总数', num(t.routes), '', ''],
-      ['后端在线', num(t.online), t.online === t.routes ? 'ok' : (t.online ? '' : 'bad'), '/' + num(t.routes)],
-      ['累计请求', num(t.req), '', ''],
-      ['累计错误', num(t.err), t.err ? 'bad' : '', ''],
-      ['平均耗时', t.avgMs ? dur(t.avgMs) : '—', '', '']
+      {
+        k: '在线后端',
+        v: num(t.online),
+        cls: offline ? 'bad' : (t.online ? 'ok' : ''),
+        sub: '/' + num(t.routes),
+        hint: offline ? offline + ' 个连不上' : '全部可达',
+      },
+      { k: '路由', v: num(t.routes), cls: '', sub: t.auto ? '含 ' + t.auto + ' 自动' : '' },
+      { k: '累计请求', v: num(t.req), cls: '', sub: '' },
+      { k: '累计错误', v: num(t.err), cls: t.err ? 'bad' : '', sub: t.req ? ((t.err / t.req) * 100).toFixed(1) + '%' : '' },
+      { k: '平均耗时', v: t.avgMs ? dur(t.avgMs) : '—', cls: '', sub: '' },
     ];
     var h = '';
     for (var i = 0; i < items.length; i++) {
-      h += '<div class="card"><span>' + items[i][0] + '</span><b class="' + items[i][2] + '">' + items[i][1] +
-        '</b>' + (items[i][3] ? '<em>' + items[i][3] + '</em>' : '') + '</div>';
+      var it = items[i];
+      h += '<div class="card" title="' + esc(it.hint || '') + '"><span>' + it.k + '</span>' +
+        '<div class="v"><b class="' + it.cls + '">' + it.v + '</b>' +
+        (it.sub ? '<em>' + esc(it.sub) + '</em>' : '') + '</div></div>';
     }
     $('cards').innerHTML = h;
   }
 
   function renderSites(list) {
-    var el = $('sites');
-    if (!el) return;
+    var el0 = $('sites');
+    if (!el0) return;
+    var panel = $('sites-panel');
+    // 一条入口都没有时整块收起 —— 留个空盒子占地方，还天天提示同一句话，很烦
     if (!list || !list.length) {
-      el.innerHTML = '<div class="sites-empty">暂无可作为入口的路由。给页面类路由打开「导航入口」，或去掉 /api、/ws 这类接口路径。</div>';
+      if (panel) panel.hidden = true;
       return;
     }
+    if (panel) panel.hidden = false;
     var h = '';
     for (var i = 0; i < list.length; i++) {
       var s = list[i];
       var ch = (s.name || '?').trim().charAt(0).toUpperCase();
-      h += '<button class="site" type="button" data-i="' + i + '">' +
+      h += '<button class="site" type="button" data-i="' + i + '" title="' + esc(BASE + s.path) + '">' +
         '<span class="ic">' + esc(ch) + '</span>' +
         '<span class="smeta"><span class="nm2">' + esc(s.name) + '</span>' +
-        '<span class="pth" title="' + esc(s.host + ':' + s.port) + '">' + esc(s.path) + '</span></span>' +
-        '<span class="dot ' + (s.online ? 'ok' : 'bad') + '"></span>' +
+        '<span class="pth">' + esc(s.path) + '</span></span>' +
+        '<span class="dot ' + (s.online ? 'ok' : 'bad') + '" title="' + (s.online ? '在线' : '连不上') + '"></span>' +
         '</button>';
     }
-    el.innerHTML = h;
-    var btns = el.querySelectorAll('.site');
+    el0.innerHTML = h;
+    var btns = el0.querySelectorAll('.site');
     for (var j = 0; j < btns.length; j++) {
       btns[j].addEventListener('click', function () {
-        var s = (S.services || [])[Number(this.getAttribute('data-i'))];
-        if (s) openViewer(s);
+        var idx = Number(this.getAttribute('data-i'));
+        var svc = (S.services || [])[idx];
+        if (svc) openViewer(svc);
       });
     }
   }
@@ -229,25 +297,39 @@
     var list = filtered();
     var all = (S.routes || []).length;
     $('cnt').textContent = list.length + (list.length !== all ? ' / ' + all : '');
+
     if (!list.length) {
-      $('rows').innerHTML = '<tr><td colspan="7" class="empty">' +
-        (all ? '没有匹配的路由' : '暂无启用的路由，去 config.json 或锅巴面板添加') + '</td></tr>';
+      var msg, act = '';
+      if (!all) {
+        msg = '还没有任何挂载。添加一条路由，把本机某个端口的服务挂到这个地址下。';
+        act = canEdit() ? '<div><button class="btn sm primary" id="empty-add">+ 添加第一条路由</button></div>' : '';
+      } else {
+        msg = '没有匹配「' + kw + '」的路由。';
+      }
+      $('rows').innerHTML = '<tr><td colspan="7" class="empty">' + esc(msg) + act + '</td></tr>';
+      var ea = $('empty-add');
+      if (ea) ea.addEventListener('click', function () { openDrawer('routes'); addRoute(); });
       return;
     }
+
     var h = '';
     for (var i = 0; i < list.length; i++) {
       var r = list[i];
       var tags = '';
-      if (r.matchReferer) tags += '<span class="tag">来源 ' + esc(r.matchReferer) + '</span>';
+      if (r.matchReferer) tags += '<span class="tag" title="来源需包含此串">来源 ' + esc(r.matchReferer) + '</span>';
       if (r.matchMethod) tags += '<span class="tag">' + esc(r.matchMethod) + '</span>';
       if (r.ws) tags += '<span class="tag ws">WS</span>';
       if (r.auto) tags += '<span class="tag auto" title="由「自动 /api」派生，不写进 config.json">自动</span>';
       if (r.entry === true) tags += '<span class="tag entry">入口</span>';
       else if (r.entry === false && !r.auto) tags += '<span class="tag off">不进导航</span>';
+
       var stCls = r.lastStatus >= 400 ? 'st-err' : (r.lastStatus ? 'st-ok' : '');
       var target = esc(r.host) + ':' + esc(r.port) +
         (r.prefix && r.prefix !== '/' ? '<span style="opacity:.6">' + esc(r.prefix) + '</span>' : '');
-      h += '<tr>' +
+      // 失败的路由整行标红一点，扫一眼就能定位问题行
+      var rowCls = r.errors ? ' has-err' : '';
+
+      h += '<tr class="' + rowCls.trim() + '">' +
         '<td class="lead"><div class="nm"><span class="dot ' + (r.online ? 'ok' : 'bad') + '" title="' +
           (r.online ? '在线 · ' + r.ping + 'ms' : '无法连接') + '"></span>' + esc(r.name) + '</div>' +
           '<div class="tags"><code>' + esc(r.matchPath) + '</code>' + tags + '</div></td>' +
@@ -256,7 +338,7 @@
         '<td class="num ' + (r.errors ? 'err-n' : '') + '" data-l="错误">' + (r.errors || '—') + '</td>' +
         '<td class="num ' + stCls + '" data-l="状态">' + (r.lastStatus || '—') + '</td>' +
         '<td class="num" data-l="耗时">' + dur(r.lastMs) + '</td>' +
-        '<td class="num hide-sm" data-l="最近" style="opacity:.75">' + time(r.lastAt) + '</td>' +
+        '<td class="num hide-sm" data-l="最近" style="opacity:.75" title="' + esc(time(r.lastAt)) + '">' + ago(r.lastAt) + '</td>' +
         '</tr>';
     }
     $('rows').innerHTML = h;
@@ -282,17 +364,31 @@
     renderSpark(S.traffic || []);
     renderRows();
     var btn = $('btn-config');
-    if (btn) btn.hidden = !(S.settings && S.settings.configEditor !== false);
+    // 不能编辑时把按钮藏掉，而不是留着点了才说"你没权限"
+    if (btn) btn.hidden = !canEdit();
   }
 
-  function pull() {
-    fetchStatus().then(render).catch(function (e) {
+  /* ---------- 拉取 ---------- */
+  var pulling = false;
+  function pull(manual) {
+    if (pulling) return;                       // 自动刷新和手动刷新撞上时别叠请求
+    pulling = true;
+    if (manual) $('btn-refresh').classList.add('spin');
+    fetchStatus().then(function (d) {
+      render(d);
+      if (manual) toast('已刷新');
+    }).catch(function (e) {
       if (IS_GUOBA) {
-        if (String(e.message) === '401') toast('锅巴登录已失效，请刷新面板');
-        else toast('读取状态失败：' + e.message);
+        if (String(e.message) === '401') toast('锅巴登录已失效，请刷新面板', 'err');
+        else toast('读取状态失败：' + e.message, 'err');
       } else if (String(e.message) === '401') {
         location.reload();
+      } else if (manual) {
+        toast('读取状态失败：' + e.message, 'err');
       }
+    }).then(function () {
+      pulling = false;
+      if (manual) setTimeout(function () { $('btn-refresh').classList.remove('spin'); }, 400);
     });
   }
 
@@ -301,18 +397,35 @@
       toast(d.message || okMsg);
       pull();
     }).catch(function (e) {
-      toast('操作失败' + (e && e.message ? '（' + e.message + '）' : ''));
+      toast('操作失败' + (e && e.message ? '（' + e.message + '）' : ''), 'err');
     });
+  }
+
+  /* ---------- 下拉菜单 ---------- */
+  function closeMenu() {
+    var m = $('menu');
+    if (m && !m.hidden) {
+      m.hidden = true;
+      $('btn-more').setAttribute('aria-expanded', 'false');
+    }
+  }
+  function toggleMenu() {
+    var m = $('menu');
+    var open = m.hidden;
+    m.hidden = !open;
+    $('btn-more').setAttribute('aria-expanded', open ? 'true' : 'false');
   }
 
   /* ---------- 页面查看器 ---------- */
   function openViewer(svc) {
     var url = BASE + svc.path;
-    $('viewer-title').textContent = svc.name + ' · ' + url;
+    $('viewer-title').textContent = svc.name;
+    $('viewer-title').title = url;
     $('viewer-open').setAttribute('href', url);
     $('viewer-frame').setAttribute('src', url);
     $('viewer').hidden = false;
     document.body.style.overflow = 'hidden';
+    $('viewer-close').focus();
   }
   function closeViewer() {
     $('viewer').hidden = true;
@@ -320,21 +433,45 @@
     document.body.style.overflow = '';
   }
 
-  /* ---------- 配置区 ---------- */
+  /* ================================================================== *
+   * 配置区
+   * ================================================================== */
   function canEdit() {
     if (!S.settings || S.settings.configEditor === false) return false;
     if (IS_GUOBA) return true;          // 锅巴已鉴权
     return !!S.settings.secured;        // 独立页必须先设口令
   }
 
-  function openDrawer() {
+  function openDrawer(tab) {
     $('drawer').hidden = false;
     document.body.style.overflow = 'hidden';
+    switchTab(tab || cfgTab);
     loadConfig();
+    $('cfg-close').focus();
   }
-  function closeDrawer() {
-    $('drawer').hidden = true;
-    document.body.style.overflow = '';
+  function closeDrawer(force) {
+    // 有未保存改动时确认一下，避免误点遮罩丢掉十分钟的编辑
+    var dirty = isDirty();
+    var go = function () {
+      $('drawer').hidden = true;
+      document.body.style.overflow = '';
+    };
+    if (!dirty || force) return go();
+    confirmBox('配置有未保存的改动，确定放弃？').then(function (ok) {
+      if (ok) go();
+    });
+  }
+
+  function switchTab(name) {
+    cfgTab = name === 'settings' ? 'settings' : 'routes';
+    var tabs = document.querySelectorAll('.tab');
+    for (var i = 0; i < tabs.length; i++) {
+      var on = tabs[i].getAttribute('data-tab') === cfgTab;
+      tabs[i].classList.toggle('on', on);
+      tabs[i].setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+    $('pane-routes').hidden = cfgTab !== 'routes';
+    $('pane-settings').hidden = cfgTab !== 'settings';
   }
 
   function loadConfig() {
@@ -358,25 +495,40 @@
       '<div class="rt-top">' +
         '<input class="rt-name" type="text" placeholder="名称（如 GsCore 面板）" value="' + esc(r.name || '') + '">' +
         '<label class="rt-enable"><input type="checkbox" class="rt-enable-cb"' + (r.enable ? ' checked' : '') + '>启用</label>' +
-        '<button class="rt-del" type="button">删除</button>' +
+        '<button class="rt-del" type="button" title="删除这条路由">删除</button>' +
       '</div>' +
       '<div class="rt-grid">' +
         routeField('rt-matchPath', '匹配路径', r.matchPath, '/memes') +
-        routeField('rt-matchReferer', '来源包含', r.matchReferer, '留空=不限') +
-        routeField('rt-matchMethod', '方法', r.matchMethod, 'GET|POST') +
         routeField('rt-host', 'host', r.host || '127.0.0.1', '127.0.0.1') +
         routeField('rt-port', '端口', r.port, '3132', 'number') +
-        routeField('rt-prefix', '目标前缀', r.prefix, '/app') +
+        routeField('rt-prefix', '目标前缀', r.prefix == null ? '/' : r.prefix, '/app（/ = 剥掉前缀）') +
+        routeField('rt-matchReferer', '来源包含', r.matchReferer, '留空 = 不限') +
+        routeField('rt-matchMethod', '方法', r.matchMethod, 'GET|POST') +
         '<label><span>导航入口</span><select class="rt-entry">' +
           '<option value=""' + (r.entry === undefined ? ' selected' : '') + '>自动</option>' +
           '<option value="1"' + (r.entry === true ? ' selected' : '') + '>显示</option>' +
           '<option value="0"' + (r.entry === false ? ' selected' : '') + '>隐藏</option>' +
         '</select></label>' +
-        '<label class="chk"><input type="checkbox" class="rt-ws"' + (r.ws ? ' checked' : '') + '>WebSocket</label>' +
-        '<label class="chk" title="页面里的前端代码用绝对路径 /api/... 发请求时，自动把 /api 分到这个后端">' +
-          '<input type="checkbox" class="rt-autoApi"' + (r.autoApi ? ' checked' : '') + '>自动 /api</label>' +
+        // 两个开关合成一格：都是布尔项，单独各占 1/4 格会让右侧留出两片空白，
+        // 还得硬凑 padding 去和输入框对齐
+        '<div class="rt-flags"><span>开关</span><div class="fl">' +
+          '<label class="chk" title="该服务需要 WebSocket（如 NapCat 实时日志）时打开">' +
+            '<input type="checkbox" class="rt-ws"' + (r.ws ? ' checked' : '') + '>WS</label>' +
+          '<label class="chk" title="页面里的前端代码用绝对路径 /api/... 发请求时，自动把 /api 分到这个后端">' +
+            '<input type="checkbox" class="rt-autoApi"' + (r.autoApi ? ' checked' : '') + '>自动 /api</label>' +
+        '</div></div>' +
       '</div>';
-    d.querySelector('.rt-del').addEventListener('click', function () { d.remove(); });
+    d.querySelector('.rt-del').addEventListener('click', function () {
+      var host = d.querySelector('.rt-host').value || '127.0.0.1';
+      var port = d.querySelector('.rt-port').value || '?';
+      var name = d.querySelector('.rt-name').value || d.querySelector('.rt-matchPath').value || '这条路由';
+      confirmBox('删除「' + name + '」→ ' + host + ':' + port + '？').then(function (ok) {
+        if (ok) { d.remove(); markDirty(); }
+      });
+    });
+    // 任何改动都标记成"未保存"，底栏与标题会变
+    d.addEventListener('input', markDirty);
+    d.addEventListener('change', markDirty);
     return d;
   }
 
@@ -395,38 +547,42 @@
     var box = $('cfg-routes');
     box.innerHTML = '';
     (d.routes || []).forEach(function (r) { box.appendChild(routeRow(r)); });
+    $('tab-cnt').textContent = (d.routes || []).length;
 
     var note = $('cfg-note');
     if (!canEdit()) {
       note.hidden = false;
       note.textContent = IS_GUOBA
         ? '配置编辑已在设置中关闭（configEditor）。可以在这里查看，但不能保存。'
-        : '当前没有设置访问口令，为防止公网误改，配置区只读。请先在锅巴面板设置口令，或直接在锅巴面板里编辑。';
+        : '当前没有设置访问口令，为防止公网误改，配置区只读。请先在锅巴面板设置口令，或在锅巴面板里编辑。';
       $('cfg-save').disabled = true;
     } else {
       note.hidden = true;
       $('cfg-save').disabled = false;
     }
+    // 读完才拍快照 —— 快照必须在渲染之后，否则一打开就显示"未保存"
+    cfgSnap = snapshot();
     $('cfg-status').textContent = '';
+    setDirtyUI(false);
   }
 
   function collectConfig() {
     var rows = $('cfg-routes').querySelectorAll('.rt');
     var routes = [];
     for (var i = 0; i < rows.length; i++) {
-      var el = rows[i];
-      var entrySel = el.querySelector('.rt-entry').value;
+      var el0 = rows[i];
+      var entrySel = el0.querySelector('.rt-entry').value;
       var r = {
-        enable: el.querySelector('.rt-enable-cb').checked,
-        name: el.querySelector('.rt-name').value.trim(),
-        matchPath: el.querySelector('.rt-matchPath').value.trim(),
-        matchReferer: el.querySelector('.rt-matchReferer').value.trim(),
-        matchMethod: el.querySelector('.rt-matchMethod').value.trim(),
-        host: el.querySelector('.rt-host').value.trim(),
-        port: Number(el.querySelector('.rt-port').value) || 0,
-        prefix: el.querySelector('.rt-prefix').value.trim(),
-        ws: el.querySelector('.rt-ws').checked,
-        autoApi: el.querySelector('.rt-autoApi').checked,
+        enable: el0.querySelector('.rt-enable-cb').checked,
+        name: el0.querySelector('.rt-name').value.trim(),
+        matchPath: el0.querySelector('.rt-matchPath').value.trim(),
+        matchReferer: el0.querySelector('.rt-matchReferer').value.trim(),
+        matchMethod: el0.querySelector('.rt-matchMethod').value.trim(),
+        host: el0.querySelector('.rt-host').value.trim(),
+        port: Number(el0.querySelector('.rt-port').value) || 0,
+        prefix: el0.querySelector('.rt-prefix').value.trim(),
+        ws: el0.querySelector('.rt-ws').checked,
+        autoApi: el0.querySelector('.rt-autoApi').checked,
       };
       if (entrySel === '1') r.entry = true;
       else if (entrySel === '0') r.entry = false;
@@ -447,35 +603,71 @@
     };
   }
 
+  function snapshot() {
+    try {
+      return JSON.stringify(collectConfig());
+    } catch (e) {
+      return '';
+    }
+  }
+  function isDirty() {
+    return !!cfgSnap && snapshot() !== cfgSnap;
+  }
+  function setDirtyUI(dirty) {
+    var s = $('cfg-save');
+    if (s) {
+      s.textContent = dirty ? '保存并应用 ·' : '保存并应用';
+      s.classList.toggle('dirty', dirty);
+    }
+    var sub = $('dh-sub');
+    if (sub) sub.textContent = dirty ? '有未保存的改动' : '全局设置与路由';
+  }
+  function markDirty() {
+    setDirtyUI(isDirty());
+  }
+
   function saveConfig() {
     if (!canEdit()) return;
     var data = collectConfig();
-    if (!data.routes.length && !confirm('路由列表为空，保存后将没有任何挂载，确定继续？')) return;
-
-    $('cfg-save').disabled = true;
-    $('cfg-status').textContent = '保存中…';
-    apiSend('/config', data).then(function (d) {
-      $('cfg-status').textContent = d.message || '已保存';
-      toast(d.message || '已保存并生效');
-      pull();
-    }).catch(function (e) {
-      $('cfg-status').textContent = '保存失败：' + e.message;
-      toast('保存失败');
-    }).then(function () {
-      $('cfg-save').disabled = !canEdit();
-    });
+    var empty = !data.routes.length;
+    var go = function () {
+      $('cfg-save').disabled = true;
+      $('cfg-status').textContent = '保存中…';
+      apiSend('/config', data).then(function (d) {
+        $('cfg-status').textContent = d.message || '已保存';
+        toast(d.message || '已保存并生效');
+        cfgSnap = JSON.stringify(data);
+        setDirtyUI(false);
+        $('tab-cnt').textContent = data.routes.length;
+        pull();
+        // 保存成功就直接关掉抽屉：留在原地的下一步动作通常是"关掉它"
+        setTimeout(closeDrawer.bind(null, true), 350);
+      }).catch(function (e) {
+        $('cfg-status').textContent = '保存失败：' + e.message;
+        toast('保存失败：' + e.message, 'err');
+      }).then(function () {
+        $('cfg-save').disabled = !canEdit();
+      });
+    };
+    if (empty) confirmBox('路由列表为空，保存后将没有任何挂载，确定继续？').then(function (ok) { if (ok) go(); });
+    else go();
   }
 
   function addRoute() {
     var box = $('cfg-routes');
-    var row = routeRow({ enable: true, matchPath: '', matchReferer: '', matchMethod: '', host: '127.0.0.1', port: '', prefix: '/', ws: false });
+    var row = routeRow({ enable: true, matchPath: '/', matchReferer: '', matchMethod: '', host: '127.0.0.1', port: '', prefix: '/', ws: false });
     box.appendChild(row);
+    switchTab('routes');
+    $('tab-cnt').textContent = box.querySelectorAll('.rt').length;
     row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     var mp = row.querySelector('.rt-matchPath');
-    if (mp) mp.focus();
+    if (mp) { mp.focus(); mp.select(); }
+    markDirty();
   }
 
-  /* ---------- 交互绑定 ---------- */
+  /* ================================================================== *
+   * 交互绑定
+   * ================================================================== */
   var ths = document.querySelectorAll('th[data-k]');
   for (var i = 0; i < ths.length; i++) {
     ths[i].addEventListener('click', function () {
@@ -484,34 +676,78 @@
       for (var j = 0; j < ths.length; j++) {
         ths[j].classList.toggle('on', ths[j] === this);
         var a = ths[j].querySelector('.arrow');
-        if (a) a.textContent = (ths[j] === this ? (sortDir > 0 ? '▲' : '▼') : '▲');
+        if (a) a.textContent = ths[j] === this ? (sortDir > 0 ? '▲' : '▼') : '▲';
       }
       renderRows();
     });
+    // 补上排序箭头占位，避免点击时列宽跳动
+    if (!ths[i].querySelector('.arrow')) {
+      var ar = el('span', 'arrow', '▲');
+      ths[i].appendChild(ar);
+    }
   }
 
   $('q').addEventListener('input', function () { kw = this.value.trim(); renderRows(); });
-  $('btn-refresh').addEventListener('click', function () { pull(); toast('已刷新'); });
-  $('btn-reload').addEventListener('click', function () { act('/reload', '已重载'); });
+
+  $('btn-refresh').addEventListener('click', function () { pull(true); });
+  $('btn-more').addEventListener('click', function (e) { e.stopPropagation(); toggleMenu(); });
+  $('menu').addEventListener('click', function (e) { e.stopPropagation(); });
+  document.addEventListener('click', closeMenu);
+
+  $('btn-reload').addEventListener('click', function () { closeMenu(); act('/reload', '已重载'); });
   $('btn-reset').addEventListener('click', function () {
-    if (confirm('确定清空所有请求统计？')) act('/reset', '统计已清空');
+    closeMenu();
+    confirmBox('清空所有请求统计？路由配置不受影响。').then(function (ok) { if (ok) act('/reset', '统计已清空'); });
   });
 
   var btnCfg = $('btn-config');
-  if (btnCfg) btnCfg.addEventListener('click', openDrawer);
-  $('cfg-close').addEventListener('click', closeDrawer);
-  $('drawer-mask').addEventListener('click', closeDrawer);
+  if (btnCfg) btnCfg.addEventListener('click', function () { openDrawer('routes'); });
+
+  var tabs = document.querySelectorAll('.tab');
+  for (var t = 0; t < tabs.length; t++) {
+    tabs[t].addEventListener('click', function () { switchTab(this.getAttribute('data-tab')); });
+  }
+
+  $('cfg-close').addEventListener('click', function () { closeDrawer(); });
+  $('drawer-mask').addEventListener('click', function () { closeDrawer(); });
   $('cfg-add').addEventListener('click', addRoute);
-  $('cfg-reload').addEventListener('click', loadConfig);
+  $('cfg-reload').addEventListener('click', function () { loadConfig(); toast('已还原为磁盘上的配置'); });
   $('cfg-save').addEventListener('click', saveConfig);
+
+  // 全局设置里的输入也要触发 dirty 标记
+  var cfgPane = $('pane-settings');
+  cfgPane.addEventListener('input', markDirty);
+  cfgPane.addEventListener('change', markDirty);
 
   $('viewer-close').addEventListener('click', closeViewer);
 
+  // 确认条按钮
+  $('cf-ok').addEventListener('click', function () { settleConfirm(true); });
+  $('cf-no').addEventListener('click', function () { settleConfirm(false); });
+
+  /* 键盘：
+     Esc    关掉最上层的浮层
+     R/F/G  刷新 / 聚焦搜索 / 打开配置（输入框里打字时不触发） */
   document.addEventListener('keydown', function (e) {
-    if (e.key !== 'Escape') return;
-    if (!$('viewer').hidden) closeViewer();
-    else if (!$('drawer').hidden) closeDrawer();
+    if (e.key === 'Escape') {
+      if (!$('confirm').hidden) return settleConfirm(false);
+      if (!$('menu').hidden) return closeMenu();
+      if (!$('viewer').hidden) return closeViewer();
+      if (!$('drawer').hidden) return closeDrawer();
+      return;
+    }
+    var tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'select' || tag === 'textarea' || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'r' || e.key === 'R') { e.preventDefault(); pull(true); }
+    else if (e.key === 'f' || e.key === 'F') { e.preventDefault(); $('q').focus(); $('q').select(); }
+    else if (e.key === 'g' || e.key === 'G') { e.preventDefault(); if (canEdit()) openDrawer('routes'); }
   });
+
+  // 顶栏吸顶时才加投影（CSS 里静止态是透明的，避免和内容"打架"）
+  window.addEventListener('scroll', function () {
+    var top = document.querySelector('.top');
+    if (top) top.classList.toggle('stuck', window.scrollY > 6);
+  }, { passive: true });
 
   // 退出登录只在独立页有意义；锅巴面板里由锅巴自己管登录
   var lo = $('btn-logout');
@@ -524,8 +760,8 @@
   function startAuto() {
     if (timer) clearInterval(timer);
     if (auto.checked) timer = setInterval(function () {
-      // 查看器/抽屉打开时暂停刷新，避免打扰
-      if (!document.hidden && $('viewer').hidden && $('drawer').hidden) pull();
+      // 查看器/抽屉/确认条打开时暂停刷新，避免打扰
+      if (!document.hidden && $('viewer').hidden && $('drawer').hidden && $('confirm').hidden) pull();
     }, 3000);
   }
   auto.addEventListener('change', startAuto);

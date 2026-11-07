@@ -68,6 +68,8 @@ export default [
         clearInterval: 'readonly',
         confirm: 'readonly',
         console: 'readonly',
+        // 确认条改成 Promise 之后要用到
+        Promise: 'readonly',
       },
     },
     rules: {
