@@ -676,6 +676,55 @@ plugin.reloadConfig(true)
   }
 }
 
+/* ---------- 19. 后端自己返回 5xx 时要留痕，否则用户分不清是谁的锅 ---------- */
+{
+  const srv = http.createServer((rq, rs) => {
+    rs.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+    rs.end('upstream died')
+  })
+  await new Promise(r => srv.listen(8771, '127.0.0.1', r))
+  writeCfg({
+    routes: [{ enable: true, name: '会回502的后端', matchPath: '/bad', host: '127.0.0.1', port: 8771, prefix: '/' }],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+
+  const warns = []
+  const realWarn = globalThis.logger.warn
+  globalThis.logger.warn = (...a) => {
+    warns.push(a.join(' '))
+    realWarn(...a)
+  }
+  const r = await req('/bad/x')
+  globalThis.logger.warn = realWarn
+
+  check('后端 5xx：状态码原样透传', r.status === 502, r.status, 502)
+  check('后端 5xx：响应体是后端的，不是我们的诊断文本', r.text === 'upstream died', r.text, 'upstream died')
+  check(
+    '后端 5xx：日志里明确写了「后端返回」而不是「转发失败」',
+    warns.some(m => m.includes('后端返回 502') && m.includes('不是转发失败')),
+    warns,
+    '含「后端返回 502 ... 不是转发失败」',
+  )
+  check(
+    '后端 5xx：日志带上了路由名、目标端口与实际转发路径，能直接定位',
+    // prefix 是 '/'，所以 /bad/x 转发到后端是 /x —— 日志里记的必须是转发后的真实路径
+    warns.some(m => m.includes('会回502的后端') && m.includes('127.0.0.1:8771/x')),
+    warns,
+    '含路由名 + 127.0.0.1:8771/x',
+  )
+
+  // 统计里要算进错误数，状态页的错误列才有意义
+  const api = globalThis.__webMountApi
+  const st = (await api.collect()).routes.find(x => x.matchPath === '/bad')
+  check('后端 5xx：计入错误统计', st && st.errors >= 1, st && st.errors, '>=1')
+  check('后端 5xx：记录的状态码是 502', st && st.lastStatus === 502, st && st.lastStatus, 502)
+
+  srv.close()
+}
+
 /* ---------- 收尾 ---------- */
 server.close()
 for (const s of Object.values(BACKENDS))
