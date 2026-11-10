@@ -59,7 +59,7 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 | `matchMethod` | 限定方法，如 `GET`、`POST\|PUT`；留空=不限 |
 | `host` / `port` | 目标主机与端口 |
 | `prefix` | 目标内前缀，见下节 |
-| `ws` | 是否同时转发 WebSocket |
+| `ws` | 是否同时转发 WebSocket（没开时 WS 握手会被明确拒绝并回 501，不再落到框架去报「处理器不存在」） |
 | `entry` | 是否作为「服务入口」卡片：`true` 显示 / `false` 隐藏 / 留空自动 |
 | `autoApi` | 自动生成一条 `/api` 分流，见「自动 /api」 |
 
@@ -132,7 +132,7 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 | `statusPage` | `true` | 开启 `/__web-mount__` 状态页 |
 | `statusToken` | 空 | 状态页口令。设了才允许在页面里改配置，公网暴露时务必设置 |
 | `debug` | `false` | 每次转发打印方法、URL、状态码、耗时 |
-| `proxyTimeout` | `30000` | 转发超时（毫秒） |
+| `proxyTimeout` | `30000` | 等待后端响应的超时（毫秒）。**SSE 请求（`Accept: text/event-stream`）不受它限制** —— 这类接口没有新事件时就一个字节都不发，按超时掐掉等于把功能掐死 |
 | `allowEmbed` | `true` | 允许页面被嵌进面板，转发时剥掉 `X-Frame-Options` 与 CSP 的 `frame-ancestors` |
 | `configEditor` | `true` | 是否允许在页面里改配置 |
 | `refererSameOriginOnly` | `true` | 来源分流只认同源；关掉等于允许任意站点伪造来源 |
@@ -154,6 +154,15 @@ curl -b 'wm_auth=<你的cookie>' \
 ```
 
 返回里带 `status`、`ms`、完整响应头与响应体（超过 64KB 截断）。这是最快区分「后端没给数据」和「中间某层把数据弄丢了」的办法。只能探测路由表里已登记的端口，未设口令时该接口直接关闭。
+
+**探测流式接口**（实时日志、系统状态这类只推送、不结束的接口）再加一个 `ms` 参数，改成「观察一个时间窗」而不是等它结束：
+
+```bash
+curl -b 'wm_auth=<你的cookie>' \
+  'http://127.0.0.1:2536/__web-mount__/probe?path=/api/Log/GetLogRealTime&port=6099&ms=4000'
+```
+
+回包里 `firstByteMs` 是首字节延迟、`frames` 是这段时间收到的 SSE 帧数。`frames: 0` 且 `firstByteMs: 0` = 后端在这几秒里确实没推任何东西（比如这期间没有任何新日志），不是转发坏了。
 
 **锅巴面板**：装了 [guoba-plugin-next](https://gitee.com/longhengmu/guoba-plugin-next) 后，侧边栏「扩展页面」里会多一个「端口挂载」，走锅巴自己的登录鉴权，不用再记状态页地址。
 
@@ -255,6 +264,27 @@ umi/react 打包的面板默认按根路径取资源，直接挂到 `/qinglong` 
 **陌生网页能访问我的后端吗？**
 默认不能：来源必须是同源，且只比对 pathname（`?q=/zy` 这种查询串不会误命中）。不要随手关 `refererSameOriginOnly`。
 
+**实时日志一片空白 / 系统信息全是 `-`？**
+
+这两块在多数面板（NapCat WebUI 就是）里走的是 **SSE**：`/api/Log/GetLogRealTime`、`/api/base/GetSysStatusRealTime`，响应头是 `text/event-stream`，而且**没有新事件时不发任何字节**（连响应头都不发）。所以：
+
+- 不能用 `proxyTimeout` 去掐它（本插件对这类请求已经跳过超时）；
+- 长时间没有字节的流会被中间层（frp / nginx / 运营商网关）当死连接切断，本插件会定期注入 `: ping` 注释行当心跳，并给这类响应加 `X-Accel-Buffering: no` 让 nginx 别缓冲；
+- 首字节超过 3 秒还没来，插件会先把 `200` + SSE 响应头发出去，让前端进入「已连接」状态（后端随后返回的真实错误码此时已无法透传，这是流式协议的固有限制）。
+
+排查顺序：先用上文的 `probe?...&ms=4000` 确认后端自己推不推数据；能推就看浏览器 F12 里这条请求是不是 `pending` 且没收到数据（问题在中间层），推不出就是后端那边的事。
+
+**WebSocket 连上就断？**
+
+不是插件的问题就是没开 `ws`：
+
+| 现象 | 含义 |
+|---|---|
+| `WS 请求 /xxx 命中路由「yyy」，但该路由没有开启「转发 WebSocket」` | 该路由 `ws` 没勾。勾上即可（自动派生的 `/api` 路由会跟随父页面） |
+| 日志里出现 `WebSocket 处理器 xxx 不存在` | 这条 upgrade 没被任何路由接住，落回 Yunzai 自己的 ws 分发；说明路径不匹配某条已挂载路由 |
+
+插件接管 WS 后会**独占**这条 upgrade，不会再让它落到框架层去回 404 —— 框架那条日志会把整个 `req.headers`（含 `authorization` 与 query 里的 token）打出来。
+
 **502 Bad Gateway？**
 
 先分清是哪一层返回的，两者的处理完全不同：
@@ -316,6 +346,7 @@ npm run check   # lint + test，提交前跑这个
 
 ## 更新
 
+- **v1.5.13**：修 SSE 流式接口被超时掐断 —— 实时日志、系统状态（`text/event-stream`）现在不再套用 `proxyTimeout`，长时间没事件时注入 `: ping` 心跳并加 `X-Accel-Buffering: no`，首字节超过 3 秒就先发 SSE 响应头；WS 握手改由插件独占分发，不再被框架的「处理器不存在 + 404 断链」打断，路由没开 `ws` 时明确回 501；自动派生的 `/api` 路由继承父页面的 `ws`；`probe` 支持 `ms` 参数观察流式接口。
 - **v1.5.12**：新增状态页直连探测接口 `/__web-mount__/probe`，绕过浏览器与转发链路直接看后端原始返回；README 精简（删掉框架日志那一节、安装路径改为 `TRSS-Yunzai/plugins`）。
 - **v1.5.11**：转发时保留客户端 `Host`（之前被改写成后端地址，会让面板的 Host 校验/Origin 校验/Set-Cookie Domain 三处同时失配，表现为「页面能开但接口没数据」）；`Set-Cookie` 的 `Domain` 属性改为剥离。
 - **v1.5.10**：转发超时的日志区分「连不上后端」与「连上了但后端迟迟不回」—— 两者排查方向相反，但 Node 给的报错文案一模一样。

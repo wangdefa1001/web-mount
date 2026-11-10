@@ -10,6 +10,11 @@ import path from 'node:path'
 
 import { makeSandbox, loggerStub, makeChecker } from './sandbox.mjs'
 
+// 把 SSE 的等待时间压到毫秒级，否则自检要跑好几分钟
+process.env.WEB_MOUNT_SSE_GRACE_MS = '800'
+process.env.WEB_MOUNT_SSE_PING_MS = '1200'
+process.env.WEB_MOUNT_SSE_HINT_MS = '3000'
+
 const { root: SANDBOX, plugin: PLUGIN } = makeSandbox()
 const PORT = 12536
 const BACKENDS = {}
@@ -74,6 +79,18 @@ const server = http.createServer((req, res) => {
     fn(req, res, step)
   }
   step()
+})
+/* 复刻 Yunzai lib/bot.js 的 wsConnect：首段路径不是已注册处理器就 404 + 销毁。
+ * 这条必须在插件 init 之前挂上，才是真实顺序（框架先注册，插件后接管）。 */
+const fwUpgrades = []
+server.on('upgrade', (rq, sock) => {
+  fwUpgrades.push(rq.url)
+  try {
+    sock.write('HTTP/1.1 404 Not Found\r\n\r\n')
+    sock.destroy()
+  } catch {
+    /* ignore */
+  }
 })
 globalThis.Bot = { express, server, logger: globalThis.logger }
 
@@ -1085,6 +1102,256 @@ plugin.reloadConfig(true)
   writeCfg({ statusToken: '', statusPage: true, routes: [], autoReload: false, debug: false })
   plugin.reloadConfig(true)
   napcat.close()
+}
+
+/* ---------- 25. SSE：实时日志 / 系统状态这种「不吭声」的流 ---------- *
+ * NapCat WebUI 的实时日志和系统状态都是 SSE：先只 setHeader，
+ * 之后**只有真的产生事件时才 write**。用普通请求的超时去管它，
+ * 表现就是「日志页打开 30 秒变 502 / 实时日志永远空白」。
+ */
+{
+  const sseSrv = http.createServer((rq, rs) => {
+    const u = rq.url.split('?')[0]
+    if (u.endsWith('/GetSysStatusRealTime')) {
+      // 正常 SSE：事件持续产生
+      rs.setHeader('Content-Type', 'text/event-stream')
+      rs.setHeader('Connection', 'keep-alive')
+      let n = 0
+      const timer = setInterval(() => {
+        n++
+        rs.write(`data: {"n":${n}}\n\n`)
+        if (n >= 3) {
+          clearInterval(timer)
+          rs.end()
+        }
+      }, 300)
+      rq.on('close', () => clearInterval(timer))
+      return
+    }
+    if (u.endsWith('/GetLogRealTime')) {
+      // 安静型 SSE：2.5 秒内一个字节都不发，之后才来一条日志
+      rs.setHeader('Content-Type', 'text/event-stream')
+      rs.setHeader('Connection', 'keep-alive')
+      const timer = setTimeout(() => rs.write('data: {"log":"hello"}\n\n'), 2500)
+      rq.on('close', () => clearTimeout(timer))
+      return
+    }
+    if (u.endsWith('/NeedAuth')) {
+      rs.writeHead(401, { 'content-type': 'application/json' })
+      rs.end('{"message":"Unauthorized"}')
+      return
+    }
+    rs.writeHead(404, { 'content-type': 'text/plain' })
+    rs.end('nope')
+  })
+  await new Promise(r => sseSrv.listen(8777, '127.0.0.1', r))
+
+  writeCfg({
+    // 故意把普通超时设得比 SSE 的安静期还短：SSE 不能被它掐死
+    proxyTimeout: 1000,
+    statusToken: 'sse-pass',
+    routes: [{ enable: true, name: 'SSE 面板', matchPath: '/sse', host: '127.0.0.1', port: 8777, prefix: '/api' }],
+    autoReload: false,
+    statusPage: true,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+
+  const streamReq = (url, wait) =>
+    new Promise(resolve => {
+      const t0 = Date.now()
+      const events = []
+      const u = new URL(url, `http://127.0.0.1:${PORT}`)
+      const r = http.request(
+        {
+          host: u.hostname,
+          port: u.port,
+          path: u.pathname + u.search,
+          headers: { accept: 'text/event-stream' },
+        },
+        res => {
+          events.push({ at: Date.now() - t0, type: 'response', status: res.statusCode, headers: res.headers })
+          res.on('data', c => events.push({ at: Date.now() - t0, type: 'data', text: c.toString('utf8') }))
+          res.on('end', () => {
+            events.push({ at: Date.now() - t0, type: 'end' })
+            resolve(events)
+          })
+        },
+      )
+      r.on('error', () => resolve(events))
+      r.end()
+      setTimeout(() => {
+        r.destroy()
+        resolve(events)
+      }, wait)
+    })
+
+  const normal = await streamReq('/sse/GetSysStatusRealTime', 2500)
+  const firstResp = normal.find(e => e.type === 'response')
+  const bodyText = normal
+    .filter(e => e.type === 'data')
+    .map(e => e.text)
+    .join('')
+  check(
+    'SSE：正常流式接口 200，不被超时掐断',
+    !!firstResp && firstResp.status === 200,
+    firstResp && firstResp.status,
+    200,
+  )
+  check(
+    'SSE：content-type 保持 text/event-stream',
+    !!firstResp && /text\/event-stream/.test(String(firstResp.headers['content-type'])),
+    firstResp && firstResp.headers['content-type'],
+    'text/event-stream',
+  )
+  check(
+    'SSE：加了 x-accel-buffering:no（否则 nginx 会把流攒着不发）',
+    !!firstResp && String(firstResp.headers['x-accel-buffering']) === 'no',
+    firstResp && firstResp.headers['x-accel-buffering'],
+    'no',
+  )
+  check('SSE：事件原样透传（data 帧不丢）', (bodyText.match(/data:/g) || []).length >= 2, bodyText, '>=2 帧')
+  check(
+    'SSE：流结束后正常收尾（没有变成 502）',
+    normal.some(e => e.type === 'end'),
+    normal.map(e => e.type),
+    '含 end',
+  )
+
+  const quiet = await streamReq('/sse/GetLogRealTime', 4000)
+  const qResp = quiet.find(e => e.type === 'response')
+  const qText = quiet
+    .filter(e => e.type === 'data')
+    .map(e => e.text)
+    .join('')
+  check(
+    'SSE 静默流：proxyTimeout 只有 1 秒，但连接仍在 800ms 时先给出 200 响应头',
+    !!qResp && qResp.status === 200 && qResp.at >= 700 && qResp.at < 1600,
+    qResp && { status: qResp.status, at: qResp.at },
+    '200 @ ~800ms',
+  )
+  check(
+    'SSE 静默流：等待期间注入注释行心跳（: 开头，客户端按规范忽略）',
+    /(^|\n):\s*ping/.test(qText),
+    qText.slice(0, 120),
+    '含 ": ping"',
+  )
+  check(
+    'SSE 静默流：后端 2.5 秒后来的第一条日志照常送达',
+    qText.includes('"log":"hello"'),
+    qText.slice(0, 200),
+    '含 hello',
+  )
+  check(
+    'SSE 静默流：全程没有 502（说明超时逻辑已让位于流式）',
+    quiet.every(e => e.type !== 'response' || e.status === 200),
+    quiet.map(e => (e.type === 'response' ? e.status : e.type)),
+    '只有 200',
+  )
+
+  const auth = await streamReq('/sse/NeedAuth', 2000)
+  const aResp = auth.find(e => e.type === 'response')
+  check(
+    'SSE：后端立刻拒绝时状态码原样透传，不会被「先发 200」盖掉',
+    !!aResp && aResp.status === 401,
+    aResp && aResp.status,
+    401,
+  )
+
+  // 探测接口的流式模式：直接把「有没有首字节 / 收了几帧」摊开
+  const login = await req('/__web-mount__', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'token=sse-pass',
+  })
+  const rawCookie = login.headers['set-cookie']
+  const cookie = (Array.isArray(rawCookie) ? rawCookie[0] : String(rawCookie || '')).split(';')[0]
+  const probe = await req(`/__web-mount__/probe?path=/api/GetSysStatusRealTime&port=8777&ms=1200&format=json`, {
+    headers: { cookie },
+  })
+  const pr = (probe.json || {}).result || {}
+  check('探测（流式）：拿到首字节耗时', typeof pr.firstByteMs === 'number' && pr.firstByteMs > 0, pr.firstByteMs, '>0')
+  check('探测（流式）：统计到事件帧数', (pr.frames || 0) >= 1, pr.frames, '>=1')
+  check('探测（流式）：观察窗口到期就收工，不会挂到超时', typeof pr.ms === 'number' && pr.ms < 4000, pr.ms, '<4000')
+
+  sseSrv.close()
+}
+
+/* ---------- 26. WS：接管后框架不能再插一脚（101 后追 404 的老问题） ---------- */
+{
+  const wsSrv = http.createServer((rq, rs) => {
+    rs.writeHead(200)
+    rs.end('plain')
+  })
+  wsSrv.on('upgrade', (rq, sock) => {
+    sock.write(
+      'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: dummy\r\n\r\n',
+    )
+    sock.write('FROM-BACKEND')
+  })
+  await new Promise(r => wsSrv.listen(8781, '127.0.0.1', r))
+
+  writeCfg({
+    routes: [
+      { enable: true, name: 'WS 后端', matchPath: '/wsx', host: '127.0.0.1', port: 8781, prefix: '/wsx', ws: true },
+      { enable: true, name: '没开WS的后端', matchPath: '/nows', host: '127.0.0.1', port: 8781, prefix: '/' },
+    ],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+
+  const upgrade = (pathname, wait = 1200) =>
+    new Promise(resolve => {
+      const chunks = []
+      const s = net.connect(PORT, '127.0.0.1', () => {
+        s.write(
+          `GET ${pathname} HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n`
+            + 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nOrigin: http://127.0.0.1:'
+            + PORT
+            + '\r\n\r\n',
+        )
+      })
+      s.on('data', c => chunks.push(c))
+      s.on('close', () => resolve(Buffer.concat(chunks).toString('utf8')))
+      s.on('error', () => resolve(Buffer.concat(chunks).toString('utf8')))
+      setTimeout(() => {
+        s.destroy()
+        resolve(Buffer.concat(chunks).toString('utf8'))
+      }, wait)
+    })
+
+  const before = fwUpgrades.length
+  const okText = await upgrade('/wsx/live')
+  check('WS：客户端收到后端的 101', /^HTTP\/1\.1 101/.test(okText), okText.split('\r\n')[0], 'HTTP/1.1 101 ...')
+  check('WS：握手后的数据帧能透传', okText.includes('FROM-BACKEND'), okText.slice(0, 120), '含 FROM-BACKEND')
+  check('WS：框架不再收到这条 upgrade（不会再追 404 断链）', fwUpgrades.length === before, fwUpgrades.slice(before), [])
+
+  const warns = []
+  const realWarn = globalThis.logger.warn
+  globalThis.logger.warn = (...a) => {
+    warns.push(a.join(' '))
+    realWarn(...a)
+  }
+  const noWs = await upgrade('/nows/live')
+  globalThis.logger.warn = realWarn
+
+  check('WS：路由没开 ws 时明确回 501', /^HTTP\/1\.1 501/.test(noWs), noWs.split('\r\n')[0], 'HTTP/1.1 501 ...')
+  check(
+    'WS：没开 ws 时日志告诉用户怎么开，而不是「处理器不存在」',
+    warns.some(m => m.includes('没有开启') && m.includes('ws')),
+    warns,
+    '含「没有开启 ... ws」',
+  )
+  check(
+    'WS：没开 ws 的情况也不交给框架（避免把 token 打进日志）',
+    fwUpgrades.length === before,
+    fwUpgrades.slice(before),
+    [],
+  )
+
+  wsSrv.close()
 }
 
 /* ---------- 收尾 ---------- */

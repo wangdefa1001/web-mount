@@ -48,6 +48,14 @@ try {
 const CFG_PATHS = configPaths(pluginDir)
 const configPath = CFG_PATHS.file
 
+/* WS 侧的告警节流：同一条路径 10 秒内只提示一次，避免面板轮询把日志刷爆 */
+function wsWarn(key, msg) {
+  const now = Date.now()
+  if (now - (state.wsWarnAt.get(key) || 0) < 10000) return
+  state.wsWarnAt.set(key, now)
+  logger.warn(msg)
+}
+
 export default class WebMount extends plugin {
   constructor() {
     super({ name: 'web-mount' })
@@ -209,28 +217,106 @@ export default class WebMount extends plugin {
     }
   }
 
-  /* ---------- WebSocket upgrade 注册 ---------- */
+  /* ---------- WebSocket upgrade 接管 ---------- *
+   * 为什么要把已有的 upgrade 监听摘下来自己分发，而不是再挂一个监听：
+   * Yunzai 的 lib/bot.js 里 wsConnect 对「首段路径不是已注册 WS 处理器」的握手
+   * 会回一句 404 并把 socket 销毁，还会把整个 req.headers（含 token）打进日志。
+   * 而 'upgrade' 是 EventEmitter：我们哪怕 prependListener 抢在最前面转发，
+   * 框架那个监听随后照样会跑 —— 于是 101 已经发出去，紧接着又被追一条 404 并断链，
+   * 表现就是「WS 连上就断」；没开 ws 的路由还额外把 token 漏进日志。
+   * 所以这里把原有的监听保存下来，统一由我们分发：命中我们的路由就自己处理，
+   * 没命中再原样交回去，框架行为完全不变。
+   */
   registerWs() {
-    if (state.wsRegistered) return
-    state.wsRegistered = true
+    const server = Bot.server
+    if (state.wsRegistered && state.wsServer === server) return
     try {
-      Bot.server.prependListener('upgrade', (req, socket, head) => {
-        if (!state.wsRoutes.length) return
-        const pathname = pathnameOf(req.url || '')
-        // 只在这个子集里匹配 WS 路由（wsRoutes 已按最长路径优先排好）
-        const ref = refContext(req.headers, state.settings)
-        const route = state.wsRoutes.find(r => routeMatches(r, ref, pathname, 'GET'))
-        if (!route) return
-        const sub = subPath(pathname, route.matchPath)
-        const targetPath = joinPath(route.prefix, sub) + queryOf(req.url || '')
-        statOf(route).count++
-        touchTraffic()
-        forwardWs(req, socket, head, targetPath, route)
+      const previous = server.listeners('upgrade')
+      server.removeAllListeners('upgrade')
+      server.on('upgrade', (req, socket, head) => {
+        let handled = false
+        try {
+          handled = this.handleUpgrade(req, socket, head)
+        } catch (e) {
+          logger.error('[web-mount] WS 转发异常: ' + e.message)
+        }
+        if (handled) return
+        for (const fn of previous) {
+          try {
+            fn.call(server, req, socket, head)
+          } catch (e) {
+            logger.error('[web-mount] 交回框架的 WS 处理出错: ' + e.message)
+          }
+        }
       })
+      state.wsServer = server
+      state.wsRegistered = true
     } catch (e) {
       state.wsRegistered = false
       logger.error('[web-mount] WS 监听注册失败: ' + e.message)
     }
+  }
+
+  /* 返回 true 表示「这次 upgrade 归我们管，框架别再插手」 */
+  handleUpgrade(req, socket, head) {
+    if (!state.routes.length || !socket || socket.destroyed) return false
+    const pathname = pathnameOf(req.url || '')
+    const ref = refContext(req.headers, state.settings)
+
+    let route = state.wsRoutes.find(r => routeMatches(r, ref, pathname, 'GET'))
+
+    // WS 握手只带 Origin（没有页面路径），配了 matchReferer 的路由永远匹配不上。
+    // 这里退一步只比路径，但仅当候选唯一时采用 —— 多候选说明真分不清该发给谁，
+    // 宁可交回框架并提示，也不要把连接送错后端。
+    if (!route) {
+      const byPath = state.wsRoutes.filter(r => subPath(pathname, r.matchPath) !== null)
+      if (byPath.length === 1) {
+        route = byPath[0]
+        if (state.settings.debug) {
+          logger.mark(`[web-mount] WS ${pathname} 握手没有可用的来源路径，已按路径匹配到 ${route.name}`)
+        }
+      } else if (byPath.length > 1) {
+        wsWarn(
+          `ambiguous:${pathname}`,
+          `[web-mount] WS ${pathname} 有多条候选路由（${byPath.map(r => r.name).join(' / ')}），`
+            + '握手拿不到页面路径无法按来源分流，已放行给框架。请让各自的 WS 路径不重叠，或去掉 matchReferer',
+        )
+        return false
+      }
+    }
+
+    if (!route) {
+      // 路径属于我们挂载的后端，但该路由没开 ws：明确回 501，
+      // 比让框架打一条「WebSocket 处理器 xxx 不存在」+ 整包请求头清楚得多。
+      const owner = state.routes.find(r => subPath(pathname, r.matchPath) !== null)
+      if (!owner) return false
+      wsWarn(
+        `disabled:${owner.matchPath}`,
+        `[web-mount] WS 请求 ${pathname} 命中路由「${owner.name || owner.matchPath}」，`
+          + '但该路由没有开启「转发 WebSocket」，已拒绝（状态页/锅巴里勾上 ws 即可）',
+      )
+      const body = `501 Not Implemented\n该路径的挂载没有开启 WebSocket 转发，请在 web-mount 配置里为「${owner.name || owner.matchPath}」勾选 ws\n`
+      try {
+        socket.write(
+          'HTTP/1.1 501 Not Implemented\r\n'
+            + 'content-type: text/plain; charset=utf-8\r\n'
+            + `content-length: ${Buffer.byteLength(body)}\r\n`
+            + 'connection: close\r\n\r\n'
+            + body,
+        )
+        socket.end()
+      } catch {
+        /* socket 已断 */
+      }
+      return true
+    }
+
+    const sub = subPath(pathname, route.matchPath)
+    const targetPath = joinPath(route.prefix, sub) + queryOf(req.url || '')
+    statOf(route).count++
+    touchTraffic()
+    forwardWs(req, socket, head, targetPath, route)
+    return true
   }
 
   /* ---------- 请求分流：状态页 → 路由匹配 → 转发 ---------- */
