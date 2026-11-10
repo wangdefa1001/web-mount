@@ -38,6 +38,15 @@
     },
     {
       "enable": true,
+      "name": "锅巴插件页（补登录凭证）",
+      "matchPath": "/guoba-plugin-mock-root/web-page/api",
+      "host": "127.0.0.1",
+      "port": 2536,
+      "prefix": "/api/custom",
+      "refererTokenHeader": "guoba-access-token"
+    },
+    {
+      "enable": true,
       "name": "只转发 WebSocket",
       "matchPath": "/ws",
       "host": "127.0.0.1",

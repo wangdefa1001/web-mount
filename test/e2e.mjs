@@ -1437,6 +1437,69 @@ plugin.reloadConfig(true)
   )
 }
 
+/* ---------- 29. 凭证补位：从同源 Referer 的 ?token= 补请求头 ----------
+ * 锅巴插件页这类「现成的第三方页面」把 token 放在自己地址的 ?token= 上，
+ * 接口却只认 header，页面代码又不读那个参数 —— 不改它的代码就只能靠转发补。
+ */
+{
+  const echo = http.createServer((rq, rs) => {
+    rs.writeHead(200, { 'content-type': 'application/json' })
+    rs.end(JSON.stringify({ tok: rq.headers['guoba-access-token'] || '' }))
+  })
+  await new Promise(r => echo.listen(8788, '127.0.0.1', r))
+
+  const route = {
+    enable: true,
+    name: '带凭证的页面',
+    matchPath: '/plug',
+    host: '127.0.0.1',
+    port: 8788,
+    prefix: '/',
+    refererTokenHeader: 'guoba-access-token',
+  }
+  writeCfg({ routes: [route], autoReload: false, statusPage: false, debug: false })
+  plugin.reloadConfig(true)
+
+  const pageUrl = `http://127.0.0.1:${PORT}/guoba-plugin-mock-root/web-page/repositories.html?token=t0k&__webBase=/x`
+  const a = await req('/plug/api/repositories', { headers: { referer: pageUrl } })
+  const pa = JSON.parse(a.text)
+  check('凭证补位：来源地址上的 ?token= 被补进配置的请求头', pa.tok === 't0k', pa.tok, 't0k')
+
+  const b = await req('/plug/api/repositories', {
+    headers: { referer: 'http://evil.example.com/page.html?token=bad' },
+  })
+  const pb = JSON.parse(b.text)
+  check('凭证补位：跨站 Referer 不采信（否则谁都能替别人塞凭证）', pb.tok === '', pb.tok, '空')
+
+  const c = await req('/plug/api/repositories', {
+    headers: { referer: pageUrl, 'guoba-access-token': 'mine' },
+  })
+  const pc = JSON.parse(c.text)
+  check('凭证补位：客户端自己带了这个头就不覆盖', pc.tok === 'mine', pc.tok, 'mine')
+
+  const d = await req('/plug/api/repositories', {
+    headers: { referer: `http://127.0.0.1:${PORT}/page.html` },
+  })
+  const pd = JSON.parse(d.text)
+  check('凭证补位：来源地址没有 token 参数时保持原样', pd.tok === '', pd.tok, '空')
+
+  // 没配这个字段的路由，一律不补 —— 免得平白把凭证递给不相干的后端
+  writeCfg({
+    routes: [{ ...route, refererTokenHeader: '' }],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+  const e = await req('/plug/api/repositories', { headers: { referer: pageUrl } })
+  const pe = JSON.parse(e.text)
+  check('凭证补位：没配该字段的路由完全不补', pe.tok === '', pe.tok, '空')
+
+  writeCfg({ routes: [], autoReload: false, statusPage: false, debug: false })
+  plugin.reloadConfig(true)
+  echo.close()
+}
+
 /* ---------- 收尾 ---------- */
 server.close()
 for (const s of Object.values(BACKENDS))

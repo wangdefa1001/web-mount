@@ -318,6 +318,7 @@
       var tags = '';
       if (r.matchReferer) tags += '<span class="tag" title="来源需包含此串">来源 ' + esc(r.matchReferer) + '</span>';
       if (r.matchMethod) tags += '<span class="tag">' + esc(r.matchMethod) + '</span>';
+      if (r.refererTokenHeader) tags += '<span class="tag" title="从来源页地址的 ?token= 补这个请求头">补 ' + esc(r.refererTokenHeader) + '</span>';
       if (r.ws) tags += '<span class="tag ws">WS</span>';
       if (r.auto) tags += '<span class="tag auto" title="由「自动 /api」派生，不写进 config.json">自动</span>';
       if (r.entry === true) tags += '<span class="tag entry">入口</span>';
@@ -517,6 +518,11 @@
           '<label class="chk" title="页面里的前端代码用绝对路径 /api/... 发请求时，自动把 /api 分到这个后端">' +
             '<input type="checkbox" class="rt-autoApi"' + (r.autoApi ? ' checked' : '') + '>自动 /api</label>' +
         '</div></div>' +
+        // 整行：只给「页面把 token 放 URL、接口只认 header」的现成页面用，平时留空。
+        // 放最后是为了不打乱上面两行 4+4 的排布（grid dense 会把整行项挤到别处）
+        '<label class="rt-wide"><span>凭证头（从来源页地址的 ?token= 补，留空不补）</span>' +
+          '<input class="rt-refererTokenHeader" type="text" placeholder="留空 = 不补（如 guoba-access-token）" value="' + esc(r.refererTokenHeader || '') + '">' +
+        '</label>' +
       '</div>';
     d.querySelector('.rt-del').addEventListener('click', function () {
       var host = d.querySelector('.rt-host').value || '127.0.0.1';
@@ -583,6 +589,7 @@
         prefix: el0.querySelector('.rt-prefix').value.trim(),
         ws: el0.querySelector('.rt-ws').checked,
         autoApi: el0.querySelector('.rt-autoApi').checked,
+        refererTokenHeader: el0.querySelector('.rt-refererTokenHeader').value.trim(),
       };
       if (entrySel === '1') r.entry = true;
       else if (entrySel === '0') r.entry = false;

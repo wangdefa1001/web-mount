@@ -1200,6 +1200,10 @@ code {
 .rt-grid > .rt-flags {
   grid-column: span 1;
 }
+/* 凭证头是低频项，独占一行，免得为了凑满格子把上面两行挤乱 */
+.rt-grid > .rt-wide {
+  grid-column: 1 / -1;
+}
 @media (min-width: 721px) {
   .rt-grid {
     grid-template-columns: repeat(3, 1fr) 1.35fr;
