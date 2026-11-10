@@ -869,6 +869,66 @@ plugin.reloadConfig(true)
   halfSrv.close()
 }
 
+/* ---------- 22. 超时也要能区分「连不上」与「连上了但不回」 ---------- */
+{
+  // 后端：接受连接、读完请求，但永不响应
+  const muteSrv = http.createServer(() => {
+    /* 故意不回 */
+  })
+  await new Promise(r => muteSrv.listen(8774, '127.0.0.1', r))
+
+  // proxyTimeout 最小允许 1000ms，测试里用 1000 以免拖慢
+  writeCfg({
+    proxyTimeout: 1000,
+    routes: [
+      { enable: true, name: '不响应的后端', matchPath: '/mute', host: '127.0.0.1', port: 8774, prefix: '/' },
+      { enable: true, name: '连不上的后端', matchPath: '/nope', host: '127.0.0.1', port: 8778, prefix: '/' },
+    ],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+
+  const warns = []
+  const realWarn = globalThis.logger.warn
+  globalThis.logger.warn = (...a) => {
+    warns.push(a.join(' '))
+    realWarn(...a)
+  }
+  const r1 = await req('/mute/api/Log/GetLogRealTime')
+  await req('/nope/x')
+  globalThis.logger.warn = realWarn
+
+  check('超时：客户端收到 502', r1.status === 502, r1.status, 502)
+  check(
+    '超时：日志保留 timeout after Nms 原文',
+    warns.some(m => /timeout after 1000ms/.test(m)),
+    warns,
+    '含 timeout after 1000ms',
+  )
+  check(
+    '超时（连上了但不回）：解释为后端接口卡住，而不是网络不通',
+    warns.some(m => m.includes('没返回任何响应') && m.includes('这个接口本身卡住')),
+    warns,
+    '含「没返回任何响应 ... 这个接口本身卡住」',
+  )
+  check(
+    '超时（连上了但不回）：不应被误判成端口没监听',
+    !warns.some(m => m.includes('不响应的后端') && m.includes('没有进程在监听')),
+    warns,
+    '不响应的后端不应出现「没有进程在监听」',
+  )
+  check(
+    '超时（连不上）：解释为端口没监听/被拦截，与上面区分开',
+    warns.some(m => m.includes('连不上的后端') && m.includes('没有进程在监听')),
+    warns,
+    '含「没有进程在监听」',
+  )
+
+  muteSrv.close()
+}
+
 /* ---------- 收尾 ---------- */
 server.close()
 for (const s of Object.values(BACKENDS))
