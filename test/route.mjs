@@ -13,6 +13,7 @@ import {
   findRoute,
   sortRoutes,
   expandAutoApi,
+  ORIGIN_ONLY,
 } from '../lib/route.js'
 import { makeChecker } from './sandbox.mjs'
 
@@ -255,6 +256,83 @@ const derivedOf = list => expandAutoApi(list).filter(r => r.derived)
   check('手工 /api 按来源命中', pickPort('/manual') === 8765, pickPort('/manual'), 8765)
   check('派生 /api 按来源命中', pickPort('/qb') === 6099, pickPort('/qb'), 6099)
   check('都不匹配时不转发', pickPort('/nope') === null, pickPort('/nope'), null)
+}
+
+/* ---------- 多 /api 按来源挑路由：同源兜底不能被「顺序」坑掉 ---------- *
+ * 真实踩坑：用户既有 GsCore 的 /api（来源 /zy|/app），又有 NapCat 派生的 /api
+ * （来源 /webui|/ncqq）。iframed 的锅巴插件页发请求时浏览器只带 Origin、
+ * 不带 Referer（模块脚本 cross-origin 请求也不带），于是：
+ *   - 旧实现：来源上下文只有 '/'，两条都不匹配 → 请求漏回 Yunzai → 404；
+ *   - 且 GsCore 那条排在前面，就算放宽成「兜底优先」，锅巴的请求也会被送去 GsCore。
+ */
+{
+  const list = sortRoutes(
+    expandAutoApi([
+      R({ matchReferer: '/zy|/app', port: 8765, name: 'GsCore API' }),
+      page({ matchPath: '/qb', port: 6099, prefix: '/qb', autoApi: true }),
+    ]),
+  )
+  const pick = (ref, viaOrigin) => {
+    let ctx = ref
+    if (viaOrigin) ctx = ref ? ref + ' ' + ORIGIN_ONLY : ORIGIN_ONLY
+    const r = findRoute(list, '/api/x', ctx, 'GET')
+    return r ? r.port : null
+  }
+  check('多 /api：来源 /zy 命中第一条', pick('/zy/page') === 8765, pick('/zy/page'), 8765)
+  check('多 /api：来源 /qb 命中 NapCat', pick('/qb/index') === 6099, pick('/qb/index'), 6099)
+  // 浏览器只带 Origin、不带 Referer 时（iframe 里的锅巴插件页、模块脚本即如此），
+  // 以前来源上下文只有 '/'，两条受限路由都不匹配 -> 请求漏回 Yunzai -> 404
+  // 只有 Origin、没有 Referer：来源上下文里只剩 '/' 和命中标记 '+'
+  const pickOriginOnly = routes => {
+    const r = findRoute(routes, '/api/x', '/ ' + ORIGIN_ONLY, 'GET')
+    return r ? r.port : null
+  }
+  const l3 = sortRoutes(
+    expandAutoApi([
+      page({ matchPath: '/qb', port: 6099, prefix: '/qb', autoApi: true }),
+      R({ matchReferer: '/zy|/app', port: 8765, name: 'GsCore API' }),
+    ]),
+  )
+  check(
+    '多 /api：只有 Origin 没 Referer 时不再整条漏回 Yunzai（会被转给其中一条）',
+    pickOriginOnly(l3) === 8765,
+    pickOriginOnly(l3),
+    8765,
+  )
+
+  check(
+    '多 /api：只有 Origin 的请求不该抢走「不设来源限制」的那一条',
+    (() => {
+      const l2 = sortRoutes(
+        expandAutoApi([
+          page({ matchPath: '/qb', port: 6099, prefix: '/qb', autoApi: true }),
+          R({ matchReferer: '', port: 8765, name: '不设防 API' }),
+        ]),
+      )
+      const r = findRoute(l2, '/api/x', '/' + ' ' + ORIGIN_ONLY, 'GET')
+      return r ? r.port : null
+    })() === 8765,
+    '不设防 API',
+    8765,
+  )
+  // 反向：NapCat 在前也不能抢走 GsCore 的兜底
+  const flipped = sortRoutes(
+    expandAutoApi([
+      page({ matchPath: '/qb', port: 6099, prefix: '/qb', autoApi: true }),
+      R({ matchReferer: '/zy|/app', port: 8765, name: 'GsCore API' }),
+    ]),
+  )
+  const pick2 = ref => {
+    const r = findRoute(flipped, '/api/x', ref, 'GET')
+    return r ? r.port : null
+  }
+  check('多 /api：/zy 的请求不管配置顺序都去 GsCore', pick2('/zy') === 8765, pick2('/zy'), 8765)
+  check(
+    '多 /api：来源子串命中优先于同源兜底（哪怕兜底排在前面）',
+    findRoute(flipped, '/api/x', '/qb/index', 'GET').port === 6099,
+    findRoute(flipped, '/api/x', '/qb/index', 'GET').port,
+    6099,
+  )
 }
 
 /* ---------- 汇总 ---------- */

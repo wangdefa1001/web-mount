@@ -1354,6 +1354,89 @@ plugin.reloadConfig(true)
   wsSrv.close()
 }
 
+/* ---------- 27. 只有 Origin、没有 Referer 的请求（iframe 里的锅巴插件页） ---------- *
+ * 浏览器在 iframe 里跑模块脚本时，请求只带 Origin（pathname 恒为 '/'）、不带 Referer。
+ * 以前两份 /api 分流都匹配不上，请求直接漏回 Yunzai → 404。
+ */
+{
+  // 两个后端各自回显 tag，便于判断请求被送到了谁
+  const a = http.createServer((rq, rs) => {
+    rs.writeHead(200, { 'content-type': 'application/json' })
+    rs.end(JSON.stringify({ tag: 'A', ref: rq.headers.referer || '', origin: rq.headers.origin || '' }))
+  })
+  const b = http.createServer((rq, rs) => {
+    rs.writeHead(200, { 'content-type': 'application/json' })
+    rs.end(JSON.stringify({ tag: 'B', ref: rq.headers.referer || '', origin: rq.headers.origin || '' }))
+  })
+  await new Promise(r => a.listen(8782, '127.0.0.1', r))
+  await new Promise(r => b.listen(8783, '127.0.0.1', r))
+
+  writeCfg({
+    routes: [
+      { enable: true, name: 'A面板', matchPath: '/pa', host: '127.0.0.1', port: 8782, prefix: '/api', autoApi: true },
+      { enable: true, name: 'B面板', matchPath: '/pb', host: '127.0.0.1', port: 8783, prefix: '/api', autoApi: true },
+    ],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+
+  const tagOf = async headers => {
+    const r = await req('/api/anything', { headers })
+    return String(r.status) + ':' + (r.json ? r.json.tag : r.text.slice(0, 12))
+  }
+
+  const byRefA = await tagOf({ referer: `http://127.0.0.1:${PORT}/pa/index.html` })
+  const byRefB = await tagOf({ referer: `http://127.0.0.1:${PORT}/pb/index.html` })
+  check('Origin-only：带 /pa 来源 -> 后端 A', byRefA === '200:A', byRefA, '200:A')
+  check('Origin-only：带 /pb 来源 -> 后端 B', byRefB === '200:B', byRefB, '200:B')
+
+  const originOnly = await tagOf({ origin: `http://127.0.0.1:${PORT}` })
+  check(
+    'Origin-only：只带 Origin 的请求不再漏回 Yunzai（原来是 418/404）',
+    originOnly.startsWith('200:') && (originOnly === '200:A' || originOnly === '200:B'),
+    originOnly,
+    '200:A 或 200:B',
+  )
+
+  a.close()
+  b.close()
+}
+
+/* ---------- 28. 连不上后端时，别把 socket hang up 解释成「后端返回前断链」 ---------- */
+{
+  writeCfg({
+    routes: [{ enable: true, name: '没监听的端口2', matchPath: '/dead2', host: '127.0.0.1', port: 8787, prefix: '/' }],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+  const warns = []
+  const realWarn = globalThis.logger.warn
+  globalThis.logger.warn = (...a) => {
+    warns.push(a.join(' '))
+    realWarn(...a)
+  }
+  const r = await req('/dead2/x')
+  globalThis.logger.warn = realWarn
+
+  check('连不上：仍然回 502', r.status === 502, r.status, 502)
+  check(
+    '连不上：日志指明是端口没在监听（ECONNREFUSED），请求根本没发出去',
+    warns.some(m => m.includes('ECONNREFUSED') && m.includes('没有进程在监听')),
+    warns,
+    '含 ECONNREFUSED + 没有进程在监听',
+  )
+  check(
+    '连不上：不再误报成「后端返回响应前就关闭了连接」',
+    !warns.some(m => m.includes('后端在返回响应前就关闭了连接')),
+    warns,
+    '不含「后端在返回响应前就关闭了连接」',
+  )
+}
+
 /* ---------- 收尾 ---------- */
 server.close()
 for (const s of Object.values(BACKENDS))
