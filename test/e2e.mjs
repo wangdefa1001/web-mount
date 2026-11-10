@@ -4,6 +4,7 @@
  * 退出码 0 = 全部通过。会自动在临时目录搭一个最小 Yunzai 结构，跑完即清理。
  */
 import http from 'node:http'
+import net from 'node:net'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -787,6 +788,85 @@ plugin.reloadConfig(true)
     check('状态页：dashboard.js 语法错误 -> ' + e.message, false, e.message, 'no error')
   }
   if (syntaxOk) check('状态页：dashboard.js 语法正确', true, true, true)
+}
+
+/* ---------- 21. 断链错误要翻译成人话，且不能覆盖真实状态码 ---------- */
+{
+  // 后端 A：接受连接后立刻 destroy —— 复现 socket hang up
+  const hangSrv = net.createServer(sock => sock.destroy())
+  await new Promise(r => hangSrv.listen(8772, '127.0.0.1', r))
+
+  // 后端 B：先回 200 + 响应体，再断链（模拟后端回了东西之后连接被掐）
+  const halfSrv = http.createServer((rq, rs) => {
+    rs.writeHead(200, { 'content-type': 'text/plain' })
+    rs.end('partial')
+  })
+  await new Promise(r => halfSrv.listen(8773, '127.0.0.1', r))
+
+  writeCfg({
+    routes: [
+      { enable: true, name: '会断链的后端', matchPath: '/hang', host: '127.0.0.1', port: 8772, prefix: '/' },
+      { enable: true, name: '正常返回的后端', matchPath: '/ok', host: '127.0.0.1', port: 8773, prefix: '/' },
+    ],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+
+  const warns = []
+  const realWarn = globalThis.logger.warn
+  globalThis.logger.warn = (...a) => {
+    warns.push(a.join(' '))
+    realWarn(...a)
+  }
+  const rHang = await req('/hang/api/Plugin/Store/List')
+  globalThis.logger.warn = realWarn
+
+  check('断链：客户端收到 502', rHang.status === 502, rHang.status, 502)
+  check(
+    '断链：日志保留了原始 err.message（便于搜素经验贴）',
+    warns.some(m => m.includes('socket hang up')),
+    warns,
+    '含 socket hang up',
+  )
+  check(
+    '断链：日志附带人话解释，指出是后端在返回响应前关的连接',
+    warns.some(m => m.includes('后端在返回响应前就关闭了连接')),
+    warns,
+    '含「后端在返回响应前就关闭了连接」',
+  )
+  check(
+    '断链：日志带上了已发出的请求字节数，可用于区分「请求未发出」与「发了没回」',
+    warns.some(m => /已发出 \d+ 字节请求头/.test(m)),
+    warns,
+    '含「已发出 N 字节请求头」',
+  )
+
+  // 正常后端未监听时给的是 ECONNREFUSED 的专门解释，不要和 hang up 混为一谈
+  writeCfg({
+    routes: [{ enable: true, name: '没监听的端口', matchPath: '/dead', host: '127.0.0.1', port: 8779, prefix: '/' }],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+  const warns2 = []
+  globalThis.logger.warn = (...a) => {
+    warns2.push(a.join(' '))
+    realWarn(...a)
+  }
+  await req('/dead/x')
+  globalThis.logger.warn = realWarn
+  check(
+    '拒绝连接：解释为「端口没有进程在监听」',
+    warns2.some(m => m.includes('没有进程在监听')),
+    warns2,
+    '含「没有进程在监听」',
+  )
+
+  hangSrv.close()
+  halfSrv.close()
 }
 
 /* ---------- 收尾 ---------- */
