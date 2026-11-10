@@ -1,6 +1,6 @@
 {
   "name": "web-mount",
-  "version": "1.5.10",
+  "version": "1.5.11",
   "engines": {
     "node": ">=16.14"
   },

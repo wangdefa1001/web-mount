@@ -3,6 +3,7 @@
   "autoReload": true,
   "configEditor": true,
   "debug": false,
+  "preserveHost": true,
   "proxyTimeout": 30000,
   "quietProxyLog": true,
   "refererSameOriginOnly": true,

@@ -137,7 +137,8 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 | `configEditor` | `true` | 是否允许在页面里改配置 |
 | `refererSameOriginOnly` | `true` | 来源分流只认同源；关掉等于允许任意站点伪造来源 |
 | `trailingSlashRedirect` | `true` | 访问 `/memes` 时 302 到 `/memes/`，让 `./x.js` 这类相对资源解析正确 |
-| `quietProxyLog` | `true` | 把已挂载路径从 Yunzai 自带的 HTTP 日志里降级为 debug，见下节 |
+| `quietProxyLog` | `true` | 把已挂载路径从 Yunzai 自带的 HTTP 日志里降级为 debug，避免请求头里的 Token 落盘，见下节 |
+| `preserveHost` | `true` | 转发时保留客户端原始 `Host`。关掉会改成后端地址，仅当后端只认自己的 Host 时才关 |
 
 ---
 
@@ -335,6 +336,7 @@ npm run check   # lint + test，提交前跑这个
 
 ## 更新
 
+- **v1.5.11**：转发时保留客户端 `Host`（之前被改写成后端地址，会让面板的 Host 校验/Origin 校验/Set-Cookie Domain 三处同时失配，表现为「页面能开但接口没数据」）；`Set-Cookie` 的 `Domain` 属性改为剥离。
 - **v1.5.10**：转发超时的日志区分「连不上后端」与「连上了但后端迟迟不回」—— 两者排查方向相反，但 Node 给的报错文案一模一样。
 - **v1.5.9**：转发失败的日志不再只有一句 `err.message` —— 附上人话解释（是端口没监听、还是后端返回响应前就断链）与已发出的请求字节数；后端已返回过响应再断链时，不再把状态码改写成 502；客户端自己关页面不再记 warn。
 - **v1.5.8**：状态页整体改版 —— 操作收进「更多」菜单、配置拆页签、页内确认条、快捷键；表头改为表格内吸顶；顶栏/抽屉/Toast 加毛玻璃并处理深色与降级。

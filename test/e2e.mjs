@@ -929,6 +929,80 @@ plugin.reloadConfig(true)
   muteSrv.close()
 }
 
+/* ---------- 23. Host 透传与 Set-Cookie Domain（面板只能开不能用的问题） ---------- */
+{
+  // 模拟一个「挑 Host 的面板」：Host 不是自己认知的域名就 403，
+  // 并且按 Host 下发绑死域名的 cookie
+  const panel = http.createServer((rq, rs) => {
+    const host = rq.headers.host || ''
+    const origin = rq.headers.origin || ''
+    // 没被改写的 Host 才是「从外部域名进来」，放行
+    if (/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) {
+      rs.writeHead(403, { 'content-type': 'application/json' })
+      rs.end(JSON.stringify({ error: 'host not allowed', host }))
+      return
+    }
+    // 下发一条绑死 Domain 的 cookie（真实面板常见写法）
+    rs.writeHead(200, {
+      'content-type': 'application/json',
+      'set-cookie': [`nap_token=abc; Domain=127.0.0.1; Path=/; HttpOnly; SameSite=Lax`],
+    })
+    rs.end(JSON.stringify({ ok: true, host, origin }))
+  })
+  await new Promise(r => panel.listen(8775, '127.0.0.1', r))
+
+  writeCfg({
+    routes: [{ enable: true, name: '挑Host的面板', matchPath: '/panel', host: '127.0.0.1', port: 8775, prefix: '/' }],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+
+  // 带一个外部域名 Host 去请求（模拟浏览器经 frp 访问）
+  const r = await req('/panel/api/Log/GetLogRealTime', { headers: { host: 'frp-hat.com:14808' } })
+  check('Host 透传：后端看到的是客户端原始 Host，不是后端地址', r.status === 200, r.status, 200)
+  let parsed = {}
+  try {
+    parsed = JSON.parse(r.text)
+  } catch {
+    /* ignore */
+  }
+  check(
+    'Host 透传：后端收到的 Host = frp-hat.com:14808',
+    parsed.host === 'frp-hat.com:14808',
+    parsed.host,
+    'frp-hat.com:14808',
+  )
+
+  const rawCookie = r.headers['set-cookie']
+  const cookieStr = Array.isArray(rawCookie) ? rawCookie.join('|') : String(rawCookie || '')
+  check('Set-Cookie：Domain 已被剥掉（否则浏览器整条拒收）', !/domain=/i.test(cookieStr), cookieStr, '不含 domain=')
+  check(
+    'Set-Cookie：其余属性保留',
+    /path=\//i.test(cookieStr) && /httponly/i.test(cookieStr),
+    cookieStr,
+    '含 Path 与 HttpOnly',
+  )
+
+  // preserveHost:false 时应退回旧行为（改写 Host）
+  writeCfg({
+    preserveHost: false,
+    routes: [{ enable: true, name: '挑Host的面板', matchPath: '/panel', host: '127.0.0.1', port: 8775, prefix: '/' }],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+  const r2 = await req('/panel/api/x', { headers: { host: 'frp-hat.com:14808' } })
+  check('preserveHost=false：退回改写 Host（老后端兼容）', r2.status === 403, r2.status, 403)
+
+  // 恢复默认，避免影响后续
+  writeCfg({ preserveHost: true, routes: [], autoReload: false, statusPage: false, debug: false })
+  plugin.reloadConfig(true)
+  panel.close()
+}
+
 /* ---------- 收尾 ---------- */
 server.close()
 for (const s of Object.values(BACKENDS))
