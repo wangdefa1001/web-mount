@@ -1003,6 +1003,90 @@ plugin.reloadConfig(true)
   panel.close()
 }
 
+/* ---------- 24. 状态页探测接口：直连后端，把真实返回原样摊开 ---------- */
+{
+  // 后端：模拟 NapCat —— 某些接口正常返回，某些接口永不响应
+  const napcat = http.createServer((rq, rs) => {
+    if (rq.url.startsWith('/api/Log/GetLogRealTime')) {
+      // 永不响应，模拟卡死
+      return
+    }
+    rs.writeHead(200, { 'content-type': 'application/json' })
+    rs.end(JSON.stringify({ ok: true, url: rq.url, gotHost: rq.headers.host }))
+  })
+  await new Promise(r => napcat.listen(8776, '127.0.0.1', r))
+
+  writeCfg({
+    statusToken: 'probe-pass',
+    proxyTimeout: 1500,
+    routes: [{ enable: true, name: '探测面板', matchPath: '/p', host: '127.0.0.1', port: 8776, prefix: '/' }],
+    autoReload: false,
+    statusPage: true,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+
+  // 未登录时禁止探测
+  const unauth = await req(`/__web-mount__/probe?path=/api/x&port=8776&format=json`)
+  check('探测：未登录直接拒绝', unauth.status === 401, unauth.status, 401)
+
+  // 登录拿 cookie
+  const login = await req('/__web-mount__', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'token=probe-pass',
+  })
+  const rawCookie = login.headers['set-cookie']
+  const cookie = (Array.isArray(rawCookie) ? rawCookie[0] : String(rawCookie || '')).split(';')[0]
+  check('探测：登录成功拿到 cookie', /wm_auth=/.test(cookie), cookie, 'wm_auth=...')
+
+  // 探测一个正常接口
+  const okProbe = await req(`/__web-mount__/probe?path=/api/hello&port=8776&format=json`, { headers: { cookie } })
+  const okBody = okProbe.json || {}
+  check(
+    '探测：正常接口回显 200',
+    okBody.result && okBody.result.status === 200,
+    okBody.result && okBody.result.status,
+    200,
+  )
+  check(
+    '探测：回显包含后端真实响应体',
+    okBody.result && String(okBody.result.body).includes('/api/hello'),
+    okBody.result && okBody.result.body,
+    '含 /api/hello',
+  )
+  check(
+    '探测：回显里能看到后端收到的 Host（用于核对 Host 透传是否生效）',
+    okBody.result && typeof okBody.result.body === 'string' && okBody.result.body.includes('gotHost'),
+    okBody.result && okBody.result.body,
+    '含 gotHost',
+  )
+
+  // 探测一个卡死接口 —— 应在 proxyTimeout 内返回结构化的超时信息，而不是挂住
+  const t0 = Date.now()
+  const hangProbe = await req(`/__web-mount__/probe?path=/api/Log/GetLogRealTime&port=8776&format=json`, {
+    headers: { cookie },
+  })
+  const spent = Date.now() - t0
+  const hangBody = hangProbe.json || {}
+  check('探测：卡死接口不会把请求挂住', spent < 6000, spent, '<6000ms')
+  check(
+    '探测：卡死接口如实回报 timeout',
+    hangBody.result && /timeout/.test(String(hangBody.result.message)),
+    hangBody.result && hangBody.result.message,
+    '含 timeout',
+  )
+
+  // 不在路由表里的端口必须拒绝（防止变成开放代理）
+  const evil = await req(`/__web-mount__/probe?path=/&port=22&format=json`, { headers: { cookie } })
+  check('探测：拒绝探测未登记端口', evil.status === 400, evil.status, 400)
+
+  // 恢复
+  writeCfg({ statusToken: '', statusPage: true, routes: [], autoReload: false, debug: false })
+  plugin.reloadConfig(true)
+  napcat.close()
+}
+
 /* ---------- 收尾 ---------- */
 server.close()
 for (const s of Object.values(BACKENDS))

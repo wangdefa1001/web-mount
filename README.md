@@ -24,7 +24,7 @@
 ## 安装
 
 ```bash
-cd your-yunzai/plugins
+cd TRSS-Yunzai/plugins
 git clone https://github.com/wangdefa1001/web-mount web-mount
 ```
 
@@ -137,43 +137,23 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 | `configEditor` | `true` | 是否允许在页面里改配置 |
 | `refererSameOriginOnly` | `true` | 来源分流只认同源；关掉等于允许任意站点伪造来源 |
 | `trailingSlashRedirect` | `true` | 访问 `/memes` 时 302 到 `/memes/`，让 `./x.js` 这类相对资源解析正确 |
-| `quietProxyLog` | `true` | 把已挂载路径从 Yunzai 自带的 HTTP 日志里降级为 debug，避免请求头里的 Token 落盘，见下节 |
+| `quietProxyLog` | `true` | 把已挂载路径从 Yunzai 自带的 HTTP 日志里降级为 debug —— 框架那条日志会把请求头整份打出来，含 `authorization` 里的 Token |
 | `preserveHost` | `true` | 转发时保留客户端原始 `Host`。关掉会改成后端地址，仅当后端只认自己的 Host 时才关 |
-
----
-
-## 日志里的 `HTTP GET 请求 { headers: ... }` 是谁打的
-
-**不是 web-mount**，是 Yunzai 框架自带的。trss-yunzai 在 `lib/bot.js` 的 `serverHandle` 里对**每一个**进入 HTTP 端口的请求打一条，并把整份请求头抄出来：
-
-```
-[http://host:port/api/version <= ip] HTTP GET 请求 { headers: {
-  ... authorization: 'Bearer xxxxx', referer: 'https://host/zy/' ...
-} }
-```
-
-web-mount 自己的日志一律带 `[web-mount]` 前缀，只在 `debug` 打开时输出，且只打方法、路径、状态码、耗时，**从不打印请求头**：
-
-```
-[web-mount] GET /api/version -> 127.0.0.1:8765/api/version 200 5ms
-```
-
-真正的麻烦在于：GsCore、NapCat 这类面板的访问令牌就在 `authorization` 头里，框架那条日志会把**明文 Token** 写进日志文件，附带的 `referer` 也把内部路径暴露了。
-
-所以默认 `quietProxyLog: true` —— 启动时把每条路由的 `matchPath`（以及 `/__web-mount__`）push 进 `Bot.express.quiet`。框架对命中的路径把日志级别从 `mark` 降到 `debug`，默认不显示；真要排查时把日志级别开到 debug 依然能看到。
-
-- `matchPath` 为 `/` 的兜底路由**不会**加进去 —— 那等于静音整站日志；
-- 热重载换了路径会精确撤销旧条目，也不动别的插件 push 进去的路径；
-- 老版本 Yunzai 没有这个数组，直接跳过，不影响运行；
-- 想还原原始行为：`"quietProxyLog": false`。
-
-> 如果这些日志已经贴到过群里、issue 或截图里，**去面板后台重置那个 Token**。日志里的是可直接用的凭证。
 
 ---
 
 ## 状态页与锅巴面板
 
 **状态页**：浏览器打开 `http://127.0.0.1:2536/__web-mount__`。概览卡片、最近 60 秒流量、可搜索排序的路由表、后端在线探测（带延迟）、服务入口卡片，以及一键重载/清空统计。
+
+**直连后端探测**（排查「页面能开但没数据」）：设置了 `statusToken` 并登录状态页后，可以绕过浏览器直接问后端一次，原样看到它回了什么：
+
+```bash
+curl -b 'wm_auth=<你的cookie>' \
+  'http://127.0.0.1:2536/__web-mount__/probe?path=/api/Log/GetLogRealTime&port=6099'
+```
+
+返回里带 `status`、`ms`、完整响应头与响应体（超过 64KB 截断）。这是最快区分「后端没给数据」和「中间某层把数据弄丢了」的办法。只能探测路由表里已登记的端口，未设口令时该接口直接关闭。
 
 **锅巴面板**：装了 [guoba-plugin-next](https://gitee.com/longhengmu/guoba-plugin-next) 后，侧边栏「扩展页面」里会多一个「端口挂载」，走锅巴自己的登录鉴权，不用再记状态页地址。
 
@@ -336,6 +316,7 @@ npm run check   # lint + test，提交前跑这个
 
 ## 更新
 
+- **v1.5.12**：新增状态页直连探测接口 `/__web-mount__/probe`，绕过浏览器与转发链路直接看后端原始返回；README 精简（删掉框架日志那一节、安装路径改为 `TRSS-Yunzai/plugins`）。
 - **v1.5.11**：转发时保留客户端 `Host`（之前被改写成后端地址，会让面板的 Host 校验/Origin 校验/Set-Cookie Domain 三处同时失配，表现为「页面能开但接口没数据」）；`Set-Cookie` 的 `Domain` 属性改为剥离。
 - **v1.5.10**：转发超时的日志区分「连不上后端」与「连上了但后端迟迟不回」—— 两者排查方向相反，但 Node 给的报错文案一模一样。
 - **v1.5.9**：转发失败的日志不再只有一句 `err.message` —— 附上人话解释（是端口没监听、还是后端返回响应前就断链）与已发出的请求字节数；后端已返回过响应再断链时，不再把状态码改写成 502；客户端自己关页面不再记 warn。
