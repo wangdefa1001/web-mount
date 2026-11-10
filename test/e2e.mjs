@@ -1444,7 +1444,7 @@ plugin.reloadConfig(true)
 {
   const echo = http.createServer((rq, rs) => {
     rs.writeHead(200, { 'content-type': 'application/json' })
-    rs.end(JSON.stringify({ tok: rq.headers['guoba-access-token'] || '' }))
+    rs.end(JSON.stringify({ tok: rq.headers['guoba-access-token'] || '', url: rq.url }))
   })
   await new Promise(r => echo.listen(8788, '127.0.0.1', r))
 
@@ -1494,6 +1494,39 @@ plugin.reloadConfig(true)
   const e = await req('/plug/api/repositories', { headers: { referer: pageUrl } })
   const pe = JSON.parse(e.text)
   check('凭证补位：没配该字段的路由完全不补', pe.tok === '', pe.tok, '空')
+
+  // 锅巴的真实形态：页面在 …/web-page/ 下，接口在 <挂载前缀>/api/custom/<插件名> 下。
+  // prefix 里那段挂载前缀必须原样保留，写成 /api/custom 会落到框架的兜底（302 到插件市场）。
+  writeCfg({
+    routes: [
+      {
+        enable: true,
+        name: '锅巴插件页',
+        matchPath: '/guoba-plugin-mock-root/web-page/api',
+        host: '127.0.0.1',
+        port: 8788,
+        prefix: '/guoba-plugin-mock-root/api/custom',
+        refererTokenHeader: 'guoba-access-token',
+      },
+    ],
+    autoReload: false,
+    statusPage: false,
+    debug: false,
+  })
+  plugin.reloadConfig(true)
+  const f = await req('/guoba-plugin-mock-root/web-page/api/JiuLi-Plugin/repositories', {
+    headers: {
+      referer: `http://127.0.0.1:${PORT}/guoba-plugin-mock-root/web-page/repositories.html?token=t0k`,
+    },
+  })
+  const pf = JSON.parse(f.text)
+  check(
+    '凭证补位：多段 prefix 完整保留，不会被压成 /api/custom',
+    pf.url === '/guoba-plugin-mock-root/api/custom/JiuLi-Plugin/repositories',
+    pf.url,
+    '/guoba-plugin-mock-root/api/custom/JiuLi-Plugin/repositories',
+  )
+  check('凭证补位：重写后 token 依然补上', pf.tok === 't0k', pf.tok, 't0k')
 
   writeCfg({ routes: [], autoReload: false, statusPage: false, debug: false })
   plugin.reloadConfig(true)

@@ -84,10 +84,12 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 | 字段                 | 值                                                            |
 | -------------------- | ------------------------------------------------------------- |
 | `matchPath`          | 页面实际请求的前缀，如 `/guoba-plugin-mock-root/web-page/api` |
-| `prefix`             | 后端真正的接口前缀，如 `/api/custom`                          |
+| `prefix`             | 后端真正的接口前缀，如 `/guoba-plugin-mock-root/api/custom`   |
 | `refererTokenHeader` | 后端认的请求头名，如 `guoba-access-token`                     |
 
-`matchPath` + `prefix` 本身就是一次前缀替换：`…/web-page/api/JiuLi-Plugin/repositories` 会被改写成 `/api/custom/JiuLi-Plugin/repositories`；`refererTokenHeader` 再从来源页地址上取 `token` 补进请求头。
+`matchPath` + `prefix` 本身就是一次前缀替换：`…/web-page/api/JiuLi-Plugin/repositories` 会被改写成 `/guoba-plugin-mock-root/api/custom/JiuLi-Plugin/repositories`；`refererTokenHeader` 再从来源页地址上取 `token` 补进请求头。
+
+> `prefix` 里那段 `/guoba-plugin-mock-root` **不能省**。锅巴把插件接口挂在「挂载前缀 + `/api/custom/<插件名>`」下，挂载前缀就是页面地址里的那一段（`realMountPrefix`，默认 `guoba-plugin-mock-root`，`/__apiBase` 参数里也写着）。写成 `/api/custom` 会落到框架对未知 `/api/*` 的兜底上，通常表现为 302 跳转到插件市场，而不是 404，很容易看错方向。
 
 凭证只从**同源** Referer 取（跨站 Referer 不采信，否则任何网页都能替别人塞凭证），客户端自己已经带了这个头就不覆盖。
 
@@ -364,6 +366,7 @@ npm run check   # lint + test，提交前跑这个
 
 ## 更新
 
+- **v1.5.16**：修正锅巴插件页的示例写法 —— `prefix` 必须带上锅巴的挂载前缀（`/guoba-plugin-mock-root/api/custom`），漏掉那段会落到框架对未知 `/api/*` 的兜底上（302 跳插件市场，看起来像「跨域失败」）。
 - **v1.5.15**：新增路由字段 `refererTokenHeader` —— 给「页面把 token 放在自己地址的 `?token=` 上、接口却只认请求头」的现成页面（锅巴自定义页就是）补凭证，不用改对方代码；凭证只从同源 Referer 取，客户端已带该头则不覆盖。
 - **v1.5.14**：修「只有 Origin、没有 Referer 的请求」漏回框架 —— iframe / 模块脚本发请求时带不出页面路径，以前多份 `/api` 分流全都匹配不上，请求整条漏回框架（落到 Yunzai 的 302/404）；现在这类请求会落到其中一条（同源兜底优先，其次配置顺序）；`matchReferer` 里单独一项写 `/` 现在按「不挑来源」处理（以前它只匹配字面 `/`，与文档不符）；`socket hang up` 在「压根没连上」时的解释归到端口没监听，不再误报成「后端返回前断链」。
 - **v1.5.13**：修 SSE 流式接口被超时掐断 —— 实时日志、系统状态（`text/event-stream`）现在不再套用 `proxyTimeout`，长时间没事件时注入 `: ping` 心跳并加 `X-Accel-Buffering: no`，首字节超过 3 秒就先发 SSE 响应头；WS 握手改由插件独占分发，不再被框架的「处理器不存在 + 404 断链」打断，路由没开 `ws` 时明确回 501；自动派生的 `/api` 路由继承父页面的 `ws`；`probe` 支持 `ms` 参数观察流式接口。

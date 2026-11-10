@@ -42,7 +42,7 @@
       "matchPath": "/guoba-plugin-mock-root/web-page/api",
       "host": "127.0.0.1",
       "port": 2536,
-      "prefix": "/api/custom",
+      "prefix": "/guoba-plugin-mock-root/api/custom",
       "refererTokenHeader": "guoba-access-token"
     },
     {
