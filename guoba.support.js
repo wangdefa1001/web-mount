@@ -96,6 +96,14 @@ export function supportGuoba() {
             '开启时（推荐）把已挂载路径从 Yunzai 自带的「HTTP GET 请求 { headers }」日志里降级为 debug —— 那条日志会把整份请求头打出来，包括面板的 Bearer Token。插件自己的转发日志不受影响',
         },
         {
+          field: 'quietExtraPaths',
+          label: '额外静音前缀',
+          component: 'Input',
+          componentProps: { placeholder: '如 /utils,/favicon.ico（逗号分隔）' },
+          bottomHelpMessage:
+            '给「没被本插件接管、但同样吵」的请求用：命中前缀的请求日志降级为 debug，只影响日志，不影响转发。框架按前缀匹配，写 /utils 就覆盖 /utils/ 下全部',
+        },
+        {
           field: 'proxyTimeout',
           label: '转发超时(ms)',
           component: 'InputNumber',

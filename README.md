@@ -145,19 +145,20 @@ git clone https://github.com/wangdefa1001/web-mount web-mount
 
 ## 全局设置
 
-| 字段                    | 默认    | 说明                                                                                                                                                |
-| ----------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `autoReload`            | `true`  | 改配置文件约 2 秒自动生效                                                                                                                           |
-| `statusPage`            | `true`  | 开启 `/__web-mount__` 状态页                                                                                                                        |
-| `statusToken`           | 空      | 状态页口令。设了才允许在页面里改配置，公网暴露时务必设置                                                                                            |
-| `debug`                 | `false` | 每次转发打印方法、URL、状态码、耗时                                                                                                                 |
-| `proxyTimeout`          | `30000` | 等待后端响应的超时（毫秒）。**SSE 请求（`Accept: text/event-stream`）不受它限制** —— 这类接口没有新事件时就一个字节都不发，按超时掐掉等于把功能掐死 |
-| `allowEmbed`            | `true`  | 允许页面被嵌进面板，转发时剥掉 `X-Frame-Options` 与 CSP 的 `frame-ancestors`                                                                        |
-| `configEditor`          | `true`  | 是否允许在页面里改配置                                                                                                                              |
-| `refererSameOriginOnly` | `true`  | 来源分流只认同源；关掉等于允许任意站点伪造来源                                                                                                      |
-| `trailingSlashRedirect` | `true`  | 访问 `/memes` 时 302 到 `/memes/`，让 `./x.js` 这类相对资源解析正确                                                                                 |
-| `quietProxyLog`         | `true`  | 把已挂载路径从 Yunzai 自带的 HTTP 日志里降级为 debug —— 框架那条日志会把请求头整份打出来，含 `authorization` 里的 Token                             |
-| `preserveHost`          | `true`  | 转发时保留客户端原始 `Host`。关掉会改成后端地址，仅当后端只认自己的 Host 时才关                                                                     |
+| 字段                    | 默认    | 说明                                                                                                                                                  |
+| ----------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `autoReload`            | `true`  | 改配置文件约 2 秒自动生效                                                                                                                             |
+| `statusPage`            | `true`  | 开启 `/__web-mount__` 状态页                                                                                                                          |
+| `statusToken`           | 空      | 状态页口令。设了才允许在页面里改配置，公网暴露时务必设置                                                                                              |
+| `debug`                 | `false` | 每次转发打印方法、URL、状态码、耗时                                                                                                                   |
+| `proxyTimeout`          | `30000` | 等待后端响应的超时（毫秒）。**SSE 请求（`Accept: text/event-stream`）不受它限制** —— 这类接口没有新事件时就一个字节都不发，按超时掐掉等于把功能掐死   |
+| `allowEmbed`            | `true`  | 允许页面被嵌进面板，转发时剥掉 `X-Frame-Options` 与 CSP 的 `frame-ancestors`                                                                          |
+| `configEditor`          | `true`  | 是否允许在页面里改配置                                                                                                                                |
+| `refererSameOriginOnly` | `true`  | 来源分流只认同源；关掉等于允许任意站点伪造来源                                                                                                        |
+| `trailingSlashRedirect` | `true`  | 访问 `/memes` 时 302 到 `/memes/`，让 `./x.js` 这类相对资源解析正确                                                                                   |
+| `quietProxyLog`         | `true`  | 把已挂载路径从 Yunzai 自带的 HTTP 日志里降级为 debug —— 框架那条日志会把请求头整份打出来，含 `authorization` 里的 Token                               |
+| `quietExtraPaths`       | `[]`    | 额外降级的前缀（数组或逗号分隔字符串），给**没被本插件接管**但同样吵的请求用，如 `["/utils", "/favicon.ico"]`。只改日志级别，不影响转发；`/` 会被忽略 |
+| `preserveHost`          | `true`  | 转发时保留客户端原始 `Host`。关掉会改成后端地址，仅当后端只认自己的 Host 时才关                                                                       |
 
 ---
 
@@ -283,6 +284,18 @@ umi/react 打包的面板默认按根路径取资源，直接挂到 `/qinglong` 
 **陌生网页能访问我的后端吗？**
 默认不能：来源必须是同源，且只比对 pathname（`?q=/zy` 这种查询串不会误命中）。不要随手关 `refererSameOriginOnly`。
 
+**日志里还是一堆 `HTTP GET 请求 { headers }`？**
+
+`quietProxyLog` 只管**本插件接管的路径**。像 `/utils/fonts/x.woff2`、`/favicon.ico` 这种由别的插件或框架自己响应的请求，不经过路由表，插件无从判断，自然没被降级 —— 而框架那条日志会把 `cookie`、`authorization` 整份打出来。
+
+把前缀填进 `quietExtraPaths` 即可（状态页「配置 → 全局设置 → 访问与安全 → 额外静音前缀」，逗号分隔）：
+
+```json
+{ "quietExtraPaths": ["/utils", "/favicon.ico"] }
+```
+
+框架按 `startsWith` 匹配，写 `/utils` 就覆盖 `/utils/` 下全部。只改日志级别，不影响转发，也不会让请求 404。别写 `/`，那等于把整站日志都关了（插件会主动忽略它）。
+
 **实时日志一片空白 / 系统信息全是 `-`？**
 
 这两块在多数面板（NapCat WebUI 就是）里走的是 **SSE**：`/api/Log/GetLogRealTime`、`/api/base/GetSysStatusRealTime`，响应头是 `text/event-stream`，而且**没有新事件时不发任何字节**（连响应头都不发）。所以：
@@ -366,6 +379,7 @@ npm run check   # lint + test，提交前跑这个
 
 ## 更新
 
+- **v1.5.17**：新增 `quietExtraPaths` —— 额外要降级的前缀，给「没被本插件接管、但同样吵」的请求用（别的插件的静态资源、`/favicon.ico` 之类），只改日志级别不影响转发；`/` 会被主动忽略，避免整站日志被关掉。
 - **v1.5.16**：修正锅巴插件页的示例写法 —— `prefix` 必须带上锅巴的挂载前缀（`/guoba-plugin-mock-root/api/custom`），漏掉那段会落到框架对未知 `/api/*` 的兜底上（302 跳插件市场，看起来像「跨域失败」）。
 - **v1.5.15**：新增路由字段 `refererTokenHeader` —— 给「页面把 token 放在自己地址的 `?token=` 上、接口却只认请求头」的现成页面（锅巴自定义页就是）补凭证，不用改对方代码；凭证只从同源 Referer 取，客户端已带该头则不覆盖。
 - **v1.5.14**：修「只有 Origin、没有 Referer 的请求」漏回框架 —— iframe / 模块脚本发请求时带不出页面路径，以前多份 `/api` 分流全都匹配不上，请求整条漏回框架（落到 Yunzai 的 302/404）；现在这类请求会落到其中一条（同源兜底优先，其次配置顺序）；`matchReferer` 里单独一项写 `/` 现在按「不挑来源」处理（以前它只匹配字面 `/`，与文档不符）；`socket hang up` 在「压根没连上」时的解释归到端口没监听，不再误报成「后端返回前断链」。

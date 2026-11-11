@@ -636,6 +636,60 @@ plugin.reloadConfig(true)
   })
   plugin.reloadConfig(true)
   check("静音：'/' 兜底路由不会被静音（否则整站日志全没了）", !quiet.includes('/'), quiet, 'not contains /')
+
+  // 额外前缀：给没被我们接管、但同样吵的请求用（别的插件的静态资源等）
+  writeCfg({
+    routes: [],
+    autoReload: false,
+    statusPage: false,
+    quietProxyLog: true,
+    quietExtraPaths: ['/utils', '/', '', '  /static/  ', '/utils'],
+  })
+  plugin.reloadConfig(true)
+  check('静音：额外前缀被加入 quiet', quiet.includes('/utils'), quiet, 'contains /utils')
+  check('静音：额外前缀已归一化（去空格、去尾斜杠）', quiet.includes('/static'), quiet, 'contains /static')
+  check("静音：额外前缀里的 '/' 被丢弃（会静音整站）", !quiet.includes('/'), quiet, 'not contains /')
+  check('静音：额外前缀里的空串被丢弃', !quiet.includes(''), quiet, 'no empty')
+  check(
+    '静音：额外前缀去重（不重复 push 同一个）',
+    quiet.filter(p => p === '/utils').length === 1,
+    quiet.filter(p => p === '/utils').length,
+    1,
+  )
+  const levelOf2 = u => (quiet.some(p => u.startsWith(p)) ? 'debug' : 'mark')
+  check(
+    '静音：/utils/fonts/x.woff2 会被框架降级为 debug',
+    levelOf2('/utils/fonts/x.woff2') === 'debug',
+    levelOf2('/utils/fonts/x.woff2'),
+    'debug',
+  )
+
+  // 字符串形式（手写配置 / 锅巴面板存的都是逗号串）也要认
+  writeCfg({
+    routes: [],
+    autoReload: false,
+    statusPage: false,
+    quietProxyLog: true,
+    quietExtraPaths: '/utils, /favicon.ico',
+  })
+  plugin.reloadConfig(true)
+  check(
+    '静音：额外前缀支持逗号分隔的字符串写法',
+    quiet.includes('/utils') && quiet.includes('/favicon.ico'),
+    quiet,
+    '两者都有',
+  )
+
+  // 关掉总开关：额外前缀同样不该残留
+  writeCfg({
+    routes: [],
+    autoReload: false,
+    statusPage: false,
+    quietProxyLog: false,
+    quietExtraPaths: ['/utils'],
+  })
+  plugin.reloadConfig(true)
+  check('静音：关掉总开关后额外前缀也撤掉', !quiet.includes('/utils'), quiet, 'not contains /utils')
 }
 
 /* ---------- 18. 首次安装：没有 config.json 时从模板生成，且不带任何预置路由 ---------- */

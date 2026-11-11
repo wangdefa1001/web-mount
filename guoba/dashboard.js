@@ -547,6 +547,7 @@
     $('cfg-refererSameOriginOnly').checked = d.refererSameOriginOnly !== false;
     $('cfg-trailingSlashRedirect').checked = d.trailingSlashRedirect !== false;
     $('cfg-quietProxyLog').checked = d.quietProxyLog !== false;
+    $('cfg-quietExtraPaths').value = (d.quietExtraPaths || []).join(',');
     $('cfg-proxyTimeout').value = d.proxyTimeout || 30000;
     $('cfg-statusToken').value = d.statusToken || '';
 
@@ -604,6 +605,7 @@
       refererSameOriginOnly: $('cfg-refererSameOriginOnly').checked,
       trailingSlashRedirect: $('cfg-trailingSlashRedirect').checked,
       quietProxyLog: $('cfg-quietProxyLog').checked,
+      quietExtraPaths: $('cfg-quietExtraPaths').value,
       proxyTimeout: Number($('cfg-proxyTimeout').value) || 30000,
       statusToken: $('cfg-statusToken').value,
       routes: routes,

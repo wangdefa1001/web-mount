@@ -159,6 +159,9 @@ export default class WebMount extends plugin {
       if (r.matchPath && r.matchPath !== '/') want.add(r.matchPath)
     }
     if (state.settings.statusPage) want.add(STATUS_PATH)
+    // 用户手填的额外前缀：给没被本插件接管、但同样吵的请求用
+    // （别的插件的静态资源、框架自己的接口等）
+    for (const p of state.settings.quietExtraPaths || []) want.add(p)
 
     for (const p of want) {
       if (quiet.includes(p)) continue

@@ -5,6 +5,7 @@
   "debug": false,
   "preserveHost": true,
   "proxyTimeout": 30000,
+  "quietExtraPaths": [],
   "quietProxyLog": true,
   "refererSameOriginOnly": true,
   "routes": [],
