@@ -816,6 +816,22 @@ plugin.reloadConfig(true)
   const missingIds = usedIds.filter(id => !htmlIds.has(id) && !DYN_IDS.has(id))
   check('状态页：JS 引用的 id 在 HTML 里都存在', missingIds.length === 0, missingIds, [])
 
+  // 静音日志页签：三处结构与逻辑必须对得上，否则点了没反应
+  check('状态页：静音页签已加入页签栏', html.includes('data-tab="quieter"'), html.includes('data-tab="quieter"'), true)
+  check('状态页：静音页签的面板存在', html.includes('id="pane-quieter"'), html.includes('id="pane-quieter"'), true)
+  check(
+    '状态页：静音页签被 switchTab 认得',
+    /TABS\s*=\s*\{[^}]*quieter/.test(src),
+    /TABS\s*=\s*\{[^}]*quieter/.test(src),
+    true,
+  )
+  check(
+    '状态页：切页签时会隐藏/显示静音面板',
+    src.includes("$('pane-quieter').hidden"),
+    src.includes("$('pane-quieter').hidden"),
+    true,
+  )
+
   // 反方向：HTML 里定义了、但 JS 与 CSS 都不引用的 id（多半是删代码时忘了清结构）。
   // 纯展示用的静态文案（如 sites-hint）也允许留着，但仍受此检查约束 ——
   // 一旦它彻底没人用，就该删掉。

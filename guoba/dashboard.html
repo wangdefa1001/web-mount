@@ -117,6 +117,7 @@
 
     <div class="drawer-tabs" role="tablist">
       <button class="tab on" role="tab" data-tab="routes" aria-selected="true">路由 <b id="tab-cnt">0</b></button>
+      <button class="tab" role="tab" data-tab="quieter" aria-selected="false">静音日志</button>
       <button class="tab" role="tab" data-tab="settings" aria-selected="false">全局设置</button>
     </div>
 
@@ -133,6 +134,26 @@
         <div class="cfg-routes" id="cfg-routes"></div>
       </div>
 
+      <div class="tabpane" id="pane-quieter" hidden>
+        <h4>框架 HTTP 日志</h4>
+        <p class="cfg-tip">
+          Yunzai 对每个请求都会打一条 <code>HTTP GET 请求 { headers }</code>，把整份请求头（含 <code>cookie</code>、<code>authorization</code>）写进日志。这里的开关控制它。
+        </p>
+        <div class="cfg-grid">
+          <label class="field full"><span>静音本插件挂载的路径<em>路由表里的 matchPath 自动生效，推荐开启</em></span><input type="checkbox" id="cfg-quietProxyLog"></label>
+          <label class="field full"><span>额外静音前缀<em>逗号或换行分隔；前缀匹配，写 /qqbot-web 覆盖它下面全部</em></span><input type="text" id="cfg-quietExtraPaths" placeholder="如 /qqbot-web, /utils, /favicon.ico"></label>
+        </div>
+        <p class="cfg-tip" id="quieter-preview">正在计算生效的前缀…</p>
+        <div class="quieter-chips" id="quieter-chips"></div>
+
+        <h4>已挂载路径（自动，不用手填）</h4>
+        <div class="quieter-chips" id="quieter-auto"></div>
+
+        <p class="cfg-tip">
+          只改日志级别，不影响转发，也不会让请求 404。唯一例外是 <code>/</code>：它等于关掉整站日志，会被忽略。
+        </p>
+      </div>
+
       <div class="tabpane" id="pane-settings" hidden>
         <h4>运行</h4>
         <div class="cfg-grid">
@@ -145,8 +166,6 @@
         <div class="cfg-grid">
           <label class="field full"><span>状态页口令<em>设了才允许在本页改配置；公网暴露时必设</em></span><input type="password" id="cfg-statusToken" placeholder="留空 = 不校验" autocomplete="new-password"></label>
           <label class="field"><span>来源仅限同源<em>防陌生网页伪造 Referer 打你的后端</em></span><input type="checkbox" id="cfg-refererSameOriginOnly"></label>
-          <label class="field"><span>静音框架 HTTP 日志<em>避免请求头里的 Token 落进日志</em></span><input type="checkbox" id="cfg-quietProxyLog"></label>
-          <label class="field full"><span>额外静音前缀<em>逗号分隔，只降级日志不影响转发；框架按前缀匹配</em></span><input type="text" id="cfg-quietExtraPaths" placeholder="如 /utils,/favicon.ico"></label>
           <label class="field"><span>启用本页配置区<em>关掉后只能查看不能保存</em></span><input type="checkbox" id="cfg-configEditor"></label>
           <label class="field"><span>开启状态页<em>关闭后 /__web-mount__ 不可访问</em></span><input type="checkbox" id="cfg-statusPage"></label>
         </div>

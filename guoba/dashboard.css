@@ -1124,6 +1124,42 @@ code {
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
 }
+/* 静音日志页签：把「当前哪些前缀生效」摆出来，点一下就能加/减 */
+.quieter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 14px;
+  min-height: 24px;
+  align-items: center;
+}
+.chip {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid var(--line);
+  background: var(--chip);
+  color: var(--muted);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  color: var(--fg);
+}
+.chip.on {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--line));
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+.chip.bad {
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--line));
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+}
+
 .rt {
   border: 1px solid var(--line);
   border-radius: 10px;

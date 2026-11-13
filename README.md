@@ -96,6 +96,25 @@ git clone https://github.com/wangdefa1001/web-mount
 | `quietExtraPaths`       | `[]`    | 额外降级的前缀，给没被本插件接管的吵闹请求用；只改日志级别，`/` 会被忽略       |
 | `preserveHost`          | `true`  | 转发时保留客户端原始 `Host`。仅当后端只认自己的 Host 时才关                    |
 
+## 静音日志
+
+Yunzai 对每个请求都打一条 `HTTP GET 请求 { headers }`，会把整份请求头（含 `cookie`、`authorization`）写进日志。插件一多，这类日志能刷满整个控制台。
+
+状态页「配置 → **静音日志**」页签专门管这个，一眼能看清哪些前缀正在生效：
+
+| 开关                 | 作用                                                              |
+| -------------------- | ----------------------------------------------------------------- |
+| 静音本插件挂载的路径 | 路由表里的 `matchPath` 自动生效，默认开                           |
+| 额外静音前缀         | 手填没被本插件接管的路径，逗号或换行分隔，如 `/qqbot-web, /utils` |
+
+页签里会把「已挂载路径」直接列成标签，点一下就加进额外前缀（再点一下从列表移除），不用手打。前缀按 `startsWith` 匹配，写 `/qqbot-web` 就覆盖它下面全部。
+
+只改日志级别，不影响转发，也不会让请求 404。唯一例外是 `/`：它等于关掉整站日志，会被忽略（界面上会标红提示）。
+
+```json
+{ "quietProxyLog": true, "quietExtraPaths": ["/qqbot-web", "/utils", "/favicon.ico"] }
+```
+
 ## 页面把 token 放在 URL 上
 
 有些现成页面（锅巴自定义页）把凭证放在自己地址的 `?token=` 上，页面代码却读错了地方，导致接口全 401。不用改它的代码，交给转发补：
@@ -158,7 +177,7 @@ curl -b 'wm_auth=<cookie>' \
 该路由没勾 `ws`。日志会写明「命中路由但没开启转发 WebSocket」，勾上即可。看到框架报「WebSocket 处理器 xxx 不存在」说明这条 upgrade 没被任何路由接住。
 
 **日志里还是一堆 `HTTP GET 请求 { headers }`？**
-`quietProxyLog` 只管本插件接管的路径。`/utils/fonts/x.woff2` 这类由别处响应的请求，把前缀填进 `quietExtraPaths` 即可（如 `["/utils"]`）。别写 `/`，那等于关掉整站日志。
+`quietProxyLog` 只管本插件接管的路径。`/qqbot-web/api/...`、`/utils/fonts/x.woff2` 这类由别处响应的请求，到「配置 → 静音日志」里把前缀填进「额外静音前缀」即可。别写 `/`，那等于关掉整站日志。
 
 **陌生网页能访问我的后端吗？**
 默认不能，来源必须同源。不要随手关 `refererSameOriginOnly`。
@@ -199,6 +218,7 @@ npm run check   # lint + test，提交前跑这个
 <details>
 <summary>点开历史版本</summary>
 
+- **v1.5.18**：静音日志独立成页签，实时预览生效前缀，点标签即可增删
 - **v1.5.17**：新增 `quietExtraPaths`，把没被本插件接管的吵闹请求也降级
 - **v1.5.16**：修正锅巴插件页示例的 `prefix`，必须带挂载前缀
 - **v1.5.15**：新增 `refererTokenHeader`，给 token 在 URL 上的现成页面补凭证

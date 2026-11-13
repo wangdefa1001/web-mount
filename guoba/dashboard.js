@@ -463,8 +463,9 @@
     });
   }
 
+  var TABS = { routes: 1, quieter: 1, settings: 1 };
   function switchTab(name) {
-    cfgTab = name === 'settings' ? 'settings' : 'routes';
+    cfgTab = TABS[name] ? name : 'routes';
     var tabs = document.querySelectorAll('.tab');
     for (var i = 0; i < tabs.length; i++) {
       var on = tabs[i].getAttribute('data-tab') === cfgTab;
@@ -472,7 +473,93 @@
       tabs[i].setAttribute('aria-selected', on ? 'true' : 'false');
     }
     $('pane-routes').hidden = cfgTab !== 'routes';
+    $('pane-quieter').hidden = cfgTab !== 'quieter';
     $('pane-settings').hidden = cfgTab !== 'settings';
+    if (cfgTab === 'quieter') renderQuieter();
+  }
+
+  /* ---------- 静音日志页签 ----------
+   * 单独给一个页签，是因为它最常动：插件一多，框架那条「HTTP GET 请求 { headers }」
+   * 会照着 cookie 和 authorization 刷屏。这里把「生效的前缀」直接算出来摆着看，
+   * 免得用户不知道写了到底管不管用。
+   */
+  function normPrefix(s) {
+    s = String(s || '').trim();
+    if (!s) return '';
+    if (s !== '/' && s.charAt(0) !== '/') s = '/' + s;
+    if (s.length > 1) s = s.replace(/\/+$/, '');
+    return s;
+  }
+
+  function parseExtraPaths() {
+    var raw = ($('cfg-quietExtraPaths').value || '').split(/[,|\s]+/);
+    var out = [];
+    for (var i = 0; i < raw.length; i++) {
+      var p = normPrefix(raw[i]);
+      // '/' 等于静音整站，服务端也会丢掉，这里先提示；空串直接忽略
+      if (!p) continue;
+      if (out.indexOf(p) === -1) out.push(p);
+    }
+    return out;
+  }
+
+  function chip(text, cls, title) {
+    return '<span class="chip ' + (cls || '') + '"' + (title ? ' title="' + esc(title) + '"' : '') + '>' + esc(text) + '</span>';
+  }
+
+  // 路由表里会被自动静音的路径（'/' 兜底不算）
+  function autoQuietPaths() {
+    var out = [];
+    var list = (S.routes || []);
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i].matchPath;
+      if (p && p !== '/' && out.indexOf(p) === -1) out.push(p);
+    }
+    return out;
+  }
+
+  function renderQuieter() {
+    var auto = autoQuietPaths();
+    var extra = parseExtraPaths();
+    var on = $('cfg-quietProxyLog').checked;
+
+    // 总开关关掉时这些前缀并不会生效，标成 muted 而不是绿色，别让看图的人误会
+    var autoCls = on ? 'on' : '';
+    var a = '';
+    for (var i = 0; i < auto.length; i++) a += chip(auto[i], autoCls, on ? '来自路由表，自动静音' : '总开关已关，当前不生效');
+    $('quieter-auto').innerHTML = a || '<span class="muted">还没有挂载任何路径</span>';
+
+    var bad = false;
+    var e = '';
+    for (var j = 0; j < extra.length; j++) {
+      if (extra[j] === '/') { bad = true; e += chip('/', 'bad', '等于静音整站日志，会被忽略'); continue; }
+      e += chip(extra[j], on ? 'on' : '', on ? '手填，生效中' : '总开关已关，当前不生效');
+    }
+    $('quieter-chips').innerHTML = e || '<span class="muted">没有额外的前缀</span>';
+
+    var total = (on ? auto.length : 0) + (on ? extra.length - (bad ? 1 : 0) : 0);
+    var msg;
+    if (!on) msg = '总开关已关：框架日志一条也不静音（路由表和额外前缀都不会生效）。';
+    else if (!total) msg = '当前没有任何前缀生效 —— 框架日志会照常打印。';
+    else msg = '生效中：共 ' + total + ' 个前缀，命中它们的请求日志降为 debug。';
+    if (on && bad) msg += ' 注意：/ 被忽略了，它会把整站日志都关掉。';
+    $('quieter-preview').textContent = msg;
+  }
+
+  function addExtraPath(p) {
+    var list = parseExtraPaths();
+    if (list.indexOf(p) !== -1) return toast(p + ' 已经在列表里');
+    list.push(p);
+    $('cfg-quietExtraPaths').value = list.join(', ');
+    renderQuieter();
+    markDirty();
+  }
+
+  function removeExtraPath(p) {
+    var list = parseExtraPaths().filter(function (x) { return x !== p; });
+    $('cfg-quietExtraPaths').value = list.join(', ');
+    renderQuieter();
+    markDirty();
   }
 
   function loadConfig() {
@@ -723,10 +810,27 @@
   $('cfg-reload').addEventListener('click', function () { loadConfig(); toast('已还原为磁盘上的配置'); });
   $('cfg-save').addEventListener('click', saveConfig);
 
-  // 全局设置里的输入也要触发 dirty 标记
-  var cfgPane = $('pane-settings');
-  cfgPane.addEventListener('input', markDirty);
-  cfgPane.addEventListener('change', markDirty);
+  // 全局设置 / 静音日志里的输入也要触发 dirty 标记
+  var cfgPanes = [$('pane-settings'), $('pane-quieter')];
+  for (var pi = 0; pi < cfgPanes.length; pi++) {
+    cfgPanes[pi].addEventListener('input', markDirty);
+    cfgPanes[pi].addEventListener('change', markDirty);
+  }
+  // 静音页的两项改动要实时重算预览
+  $('cfg-quietExtraPaths').addEventListener('input', renderQuieter);
+  $('cfg-quietProxyLog').addEventListener('change', renderQuieter);
+
+  // 点 chip 把前缀追加（或移除）到额外静音框，省得手打
+  $('quieter-auto').addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !/chip/.test(t.className || '')) return;
+    addExtraPath(t.textContent);
+  });
+  $('quieter-chips').addEventListener('click', function (e) {
+    var t = e.target;
+    if (!t || !/chip/.test(t.className || '')) return;
+    removeExtraPath(t.textContent);
+  });
 
   $('viewer-close').addEventListener('click', closeViewer);
 
